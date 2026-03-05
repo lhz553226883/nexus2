@@ -41,6 +41,7 @@ interface AgentContextValue {
   setActiveTaskId: (id: string | null) => void;
   createNewTask: () => void;
   sendMessage: (content: string) => void;
+  stopTask: () => void;
   togglePanel: () => void;
 }
 
@@ -63,6 +64,8 @@ export function AgentProvider({ children }: { children: React.ReactNode }) {
   const [backendOnline, setBackendOnline] = useState(false);
   const runningRef = useRef(false);
   const abortRef = useRef<AbortController | null>(null);
+  // Track the current task+msg for cleanup on stop
+  const activeRunRef = useRef<{ taskId: string; msgId: string } | null>(null);
 
   const activeTask = tasks.find((t) => t.id === activeTaskId) ?? null;
 
@@ -124,6 +127,55 @@ export function AgentProvider({ children }: { children: React.ReactNode }) {
     setActiveTaskId(newTask.id);
     setComputerPanel(defaultPanel);
   }, []);
+
+  // ── Shared finalize helper ────────────────────────────────────────────────────
+  // Marks all running steps as completed and clears isRunning state
+  const finalizeRun = useCallback(
+    (taskId: string, msgId: string, status: "completed" | "failed" | "stopped") => {
+      // Mark all still-running steps as completed (prevent "思考中..." stuck)
+      setTasks((prev) =>
+        prev.map((t) => {
+          if (t.id !== taskId) return t;
+          return {
+            ...t,
+            status: status === "stopped" ? "completed" : status,
+            summary:
+              status === "failed"
+                ? "执行失败"
+                : status === "stopped"
+                  ? "已停止"
+                  : "任务已完成",
+            updatedAt: Date.now(),
+            messages: t.messages.map((m) => {
+              if (m.id !== msgId) return m;
+              return {
+                ...m,
+                isStreaming: false,
+                steps: (m.steps || []).map((s) =>
+                  s.status === "running"
+                    ? { ...s, status: "completed" as const }
+                    : s,
+                ),
+              };
+            }),
+          };
+        }),
+      );
+      setIsRunning(false);
+      runningRef.current = false;
+      activeRunRef.current = null;
+      setComputerPanel((prev) => ({
+        ...prev,
+        subtitle:
+          status === "failed"
+            ? "Task failed"
+            : status === "stopped"
+              ? "Task stopped"
+              : "Task completed",
+      }));
+    },
+    [],
+  );
 
   // ── Process a single AgentEvent (used by mock path) ─────────────────────────
   const processEvent = useCallback(
@@ -210,24 +262,10 @@ export function AgentProvider({ children }: { children: React.ReactNode }) {
           isStreaming: false,
         }));
       } else if (type === "task_done") {
-        setTasks((prev) =>
-          prev.map((t) =>
-            t.id !== taskId
-              ? t
-              : {
-                  ...t,
-                  status: "completed",
-                  summary: "任务已完成",
-                  updatedAt: Date.now(),
-                },
-          ),
-        );
-        setIsRunning(false);
-        runningRef.current = false;
-        setComputerPanel((prev) => ({ ...prev, subtitle: "Task completed" }));
+        finalizeRun(taskId, assistantMsgId, "completed");
       }
     },
-    [updateMessage, addTerminalLine],
+    [updateMessage, addTerminalLine, finalizeRun],
   );
 
   // ── Real backend path (SSE) ─────────────────────────────────────────────────
@@ -265,16 +303,19 @@ export function AgentProvider({ children }: { children: React.ReactNode }) {
           // ── think: LLM returned thoughts and tool selection ──
           else if (event.type === "think" && event.step !== undefined) {
             const stepId = stepIdMap[event.step];
-            if (stepId && event.tool_names && event.tool_names.length > 0) {
-              // Update step title with tool info
-              const toolsStr = event.tool_names.join(", ");
+            if (stepId) {
+              // Update step title with tool info or mark as "思考完成"
+              const toolsStr =
+                event.tool_names && event.tool_names.length > 0
+                  ? `调用 ${event.tool_names.join(", ")}`
+                  : "思考完成";
               updateMessage(taskId, assistantMsgId, (m) => ({
                 ...m,
                 steps: (m.steps || []).map((s) =>
                   s.id === stepId
                     ? {
                         ...s,
-                        title: `步骤 ${event.step}: 调用 ${toolsStr}`,
+                        title: `步骤 ${event.step}: ${toolsStr}`,
                       }
                     : s,
                 ),
@@ -282,6 +323,18 @@ export function AgentProvider({ children }: { children: React.ReactNode }) {
             }
             if (event.thoughts) {
               addTerminalLine(`💭 ${event.thoughts.slice(0, 200)}`, "output");
+            }
+            // If will_act is false, the step won't call act(), so we complete it here
+            if (event.will_act === false && stepIdMap[event.step!]) {
+              const stepId = stepIdMap[event.step!];
+              updateMessage(taskId, assistantMsgId, (m) => ({
+                ...m,
+                steps: (m.steps || []).map((s) =>
+                  s.id === stepId
+                    ? { ...s, status: "completed" as const }
+                    : s,
+                ),
+              }));
             }
           }
 
@@ -385,79 +438,41 @@ export function AgentProvider({ children }: { children: React.ReactNode }) {
             addTerminalLine(event.content, lineType);
           }
 
-          // ── task_done / task_error / stream_end ──
+          // ── task_done / stream_end ──
           else if (
             event.type === "task_done" ||
             event.type === "stream_end"
           ) {
-            updateMessage(taskId, assistantMsgId, (m) => ({
-              ...m,
-              isStreaming: false,
-            }));
             const finalStatus =
               event.status === "failed" ? "failed" : "completed";
-            setTasks((prev) =>
-              prev.map((t) =>
-                t.id !== taskId
-                  ? t
-                  : {
-                      ...t,
-                      status: finalStatus as TaskStatus,
-                      summary:
-                        finalStatus === "failed"
-                          ? "执行失败"
-                          : "任务已完成",
-                      updatedAt: Date.now(),
-                    },
-              ),
-            );
-            setIsRunning(false);
-            runningRef.current = false;
-            setComputerPanel((prev) => ({
-              ...prev,
-              subtitle:
-                finalStatus === "failed"
-                  ? "Task failed"
-                  : "Task completed",
-            }));
-          } else if (event.type === "task_error") {
+            finalizeRun(taskId, assistantMsgId, finalStatus);
+          }
+
+          // ── task_error ──
+          else if (event.type === "task_error") {
             updateMessage(taskId, assistantMsgId, (m) => ({
               ...m,
               content:
                 m.content + `\n\n**错误：** ${event.error || "未知错误"}`,
-              isStreaming: false,
             }));
             addTerminalLine(`❌ Error: ${event.error}`, "error");
-            setTasks((prev) =>
-              prev.map((t) =>
-                t.id !== taskId
-                  ? t
-                  : {
-                      ...t,
-                      status: "failed",
-                      summary: "执行失败",
-                      updatedAt: Date.now(),
-                    },
-              ),
-            );
-            setIsRunning(false);
-            runningRef.current = false;
+            finalizeRun(taskId, assistantMsgId, "failed");
           }
         },
         (err: Error) => {
-          updateMessage(taskId, assistantMsgId, (m) => ({
-            ...m,
-            content: m.content + `\n\n**连接错误：** ${err.message}`,
-            isStreaming: false,
-          }));
-          addTerminalLine(`❌ Connection error: ${err.message}`, "error");
-          setIsRunning(false);
-          runningRef.current = false;
+          if (activeRunRef.current?.taskId === taskId) {
+            updateMessage(taskId, assistantMsgId, (m) => ({
+              ...m,
+              content: m.content + `\n\n**连接错误：** ${err.message}`,
+            }));
+            addTerminalLine(`❌ Connection error: ${err.message}`, "error");
+            finalizeRun(taskId, assistantMsgId, "failed");
+          }
         },
       );
       abortRef.current = controller;
     },
-    [updateMessage, addTerminalLine],
+    [updateMessage, addTerminalLine, finalizeRun],
   );
 
   // ── Mock simulation path ──────────────────────────────────────────────────
@@ -465,7 +480,10 @@ export function AgentProvider({ children }: { children: React.ReactNode }) {
     async (taskId: string, assistantMsgId: string, prompt: string) => {
       const events = simulateAgentExecution(prompt);
       for (const event of events) {
-        if (!runningRef.current && event.type !== "task_done") continue;
+        if (!runningRef.current) {
+          // Stopped early — finalize
+          if (event.type !== "task_done") continue;
+        }
         processEvent(taskId, assistantMsgId, event);
         const delay =
           event.type === "message_chunk"
@@ -482,6 +500,27 @@ export function AgentProvider({ children }: { children: React.ReactNode }) {
     },
     [processEvent],
   );
+
+  // ── stopTask ──────────────────────────────────────────────────────────────────
+  const stopTask = useCallback(() => {
+    if (!runningRef.current) return;
+    // Abort the SSE stream
+    if (abortRef.current) {
+      abortRef.current.abort();
+      abortRef.current = null;
+    }
+    // Finalize state immediately
+    if (activeRunRef.current) {
+      const { taskId, msgId } = activeRunRef.current;
+      finalizeRun(taskId, msgId, "stopped");
+      addTerminalLine("⏹ Task stopped by user", "output");
+    } else {
+      // Fallback: just clear running state
+      setIsRunning(false);
+      runningRef.current = false;
+      activeRunRef.current = null;
+    }
+  }, [finalizeRun, addTerminalLine]);
 
   // ── Main sendMessage ──────────────────────────────────────────────────────
   const sendMessage = useCallback(
@@ -522,6 +561,7 @@ export function AgentProvider({ children }: { children: React.ReactNode }) {
 
       setIsRunning(true);
       runningRef.current = true;
+      activeRunRef.current = { taskId, msgId: assistantMsg.id };
 
       setComputerPanel({
         type: "terminal",
@@ -540,7 +580,7 @@ export function AgentProvider({ children }: { children: React.ReactNode }) {
       if (backendOnline) {
         runWithBackend(taskId, assistantMsg.id, content);
       } else {
-        runWithMock(taskId, assistantMsg.id, content);
+        await runWithMock(taskId, assistantMsg.id, content);
       }
     },
     [activeTaskId, isRunning, backendOnline, runWithBackend, runWithMock],
@@ -563,6 +603,7 @@ export function AgentProvider({ children }: { children: React.ReactNode }) {
         setActiveTaskId,
         createNewTask,
         sendMessage,
+        stopTask,
         togglePanel,
       }}
     >

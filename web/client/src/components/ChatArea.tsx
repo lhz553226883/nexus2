@@ -219,24 +219,35 @@ function EmptyState({ onQuickTask }: { onQuickTask: (prompt: string) => void }) 
 
 // ── Input Bar ─────────────────────────────────────────────────────────────────
 function InputBar() {
-  const { sendMessage, isRunning, togglePanel, isPanelOpen } = useAgent();
+  const { sendMessage, stopTask, isRunning, togglePanel, isPanelOpen } = useAgent();
   const [input, setInput] = useState("");
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
+  // Auto-focus when not running
+  useEffect(() => {
+    if (!isRunning) {
+      textareaRef.current?.focus();
+    }
+  }, [isRunning]);
+
   const handleSend = useCallback(() => {
     const trimmed = input.trim();
-    if (!trimmed || isRunning) return;
+    if (!trimmed) return;
     sendMessage(trimmed);
     setInput("");
     if (textareaRef.current) {
       textareaRef.current.style.height = "auto";
     }
-  }, [input, isRunning, sendMessage]);
+  }, [input, sendMessage]);
+
+  const handleStop = useCallback(() => {
+    stopTask();
+  }, [stopTask]);
 
   const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
-      handleSend();
+      if (!isRunning) handleSend();
     }
   };
 
@@ -246,6 +257,8 @@ function InputBar() {
     el.style.height = "auto";
     el.style.height = Math.min(el.scrollHeight, 180) + "px";
   };
+
+  const canSend = input.trim().length > 0 && !isRunning;
 
   return (
     <div className="px-4 pb-4 pt-2 shrink-0">
@@ -257,20 +270,19 @@ function InputBar() {
             : "border-border/60 hover:border-border",
         )}
       >
-        {/* Textarea */}
+        {/* Textarea — always enabled so user can type while waiting */}
         <textarea
           ref={textareaRef}
           value={input}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={handleKeyDown}
           onInput={handleInput}
-          placeholder="发送消息给 Nexus..."
-          disabled={isRunning}
+          placeholder={isRunning ? "Nexus 正在执行任务，按停止按钮可中断..." : "发送消息给 Nexus..."}
           rows={1}
           className={cn(
             "w-full resize-none bg-transparent text-sm text-foreground placeholder-muted-foreground",
             "px-4 pt-3.5 pb-2 outline-none leading-relaxed",
-            "disabled:opacity-50 disabled:cursor-not-allowed",
+            isRunning && "placeholder-muted-foreground/50",
           )}
           style={{ maxHeight: 180 }}
         />
@@ -300,29 +312,36 @@ function InputBar() {
             </button>
           </div>
 
-          {/* Send / Stop */}
-          <button
-            onClick={handleSend}
-            disabled={!input.trim() && !isRunning}
-            className={cn(
-              "w-8 h-8 rounded-xl flex items-center justify-center transition-all duration-150 shadow-sm",
-              input.trim() && !isRunning
-                ? "bg-foreground text-background hover:opacity-85"
-                : isRunning
-                  ? "bg-foreground/10 text-foreground/60 cursor-not-allowed"
-                  : "bg-muted text-muted-foreground cursor-not-allowed",
-            )}
-          >
-            {isRunning ? (
+          {/* Send / Stop — two distinct buttons */}
+          {isRunning ? (
+            /* Stop button — always clickable when running */
+            <button
+              onClick={handleStop}
+              className="w-8 h-8 rounded-xl flex items-center justify-center transition-all duration-150 shadow-sm bg-red-500/90 hover:bg-red-500 text-white"
+              title="停止任务"
+            >
               <Square size={12} className="fill-current" />
-            ) : (
+            </button>
+          ) : (
+            /* Send button */
+            <button
+              onClick={handleSend}
+              disabled={!canSend}
+              className={cn(
+                "w-8 h-8 rounded-xl flex items-center justify-center transition-all duration-150 shadow-sm",
+                canSend
+                  ? "bg-foreground text-background hover:opacity-85"
+                  : "bg-muted text-muted-foreground cursor-not-allowed",
+              )}
+              title="发送"
+            >
               <ArrowUp size={14} />
-            )}
-          </button>
+            </button>
+          )}
         </div>
       </div>
       <p className="text-[10px] text-muted-foreground/40 text-center mt-2">
-        按 Enter 发送 · Shift+Enter 换行
+        {isRunning ? "点击红色按钮可停止任务" : "按 Enter 发送 · Shift+Enter 换行"}
       </p>
     </div>
   );
