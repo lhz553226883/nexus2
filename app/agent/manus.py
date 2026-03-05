@@ -181,11 +181,11 @@ class Manus(ToolCallAgent):
         logger.info(f"✨ {self.name}\'s raw LLM response: {content}")
 
         # Parse structured output
-        observation_match = re.search(r\'\\*\\*观察 \\(Observation\\)\\*\\*:([\\s\\S]*?)(?=\\n\\*\\*思考 \\(Thought\\)\\*\\*|$)\\' , content)
-        thought_match = re.search(r\'\\*\\*思考 \\(Thought\\)\\*\\*:([\\s\\S]*?)(?=\\n\\*\\*计划 \\(Plan\\)\\*\\*|$)\\' , content)
-        plan_match = re.search(r\'\\*\\*计划 \\(Plan\\)\\*\\*:([\\s\\S]*?)(?=\\n\\*\\*行动 \\(Action\\)\\*\\*|$)\\' , content)
-        action_match = re.search(r\'\\*\\*行动 \\(Action\\)\\*\\*:([\\s\\S]*?)(?=\\n\\*\\*回答 \\(Answer\\)\\*\\*|$)\\' , content)
-        answer_match = re.search(r\'\\*\\*回答 \\(Answer\\)\\*\\*:([\\s\\S]*)$\', content)
+        observation_match = re.search(r'\*\*观察 \(Observation\)\*\*:([\s\S]*?)(?=\n\*\*思考 \(Thought\)\*\*|$)', content)
+        thought_match = re.search(r'\*\*思考 \(Thought\)\*\*:([\s\S]*?)(?=\n\*\*计划 \(Plan\)\*\*|$)', content)
+        plan_match = re.search(r'\*\*计划 \(Plan\)\*\*:([\s\S]*?)(?=\n\*\*行动 \(Action\)\*\*|$)', content)
+        action_match = re.search(r'\*\*行动 \(Action\)\*\*:([\s\S]*?)(?=\n\*\*回答 \(Answer\)\*\*|$)', content)
+        answer_match = re.search(r'\*\*回答 \(Answer\)\*\*:([\s\S]*)$', content)
 
         observation = observation_match.group(1).strip() if observation_match else ""
         thought = thought_match.group(1).strip() if thought_match else ""
@@ -214,7 +214,7 @@ class Manus(ToolCallAgent):
             try:
                 # Assuming action_str might contain a single tool call in the format tool_name(param1=value1, ...)
                 # This is a simplified parsing. A more robust solution might involve a dedicated parser or JSON output for actions.
-                tool_name_match = re.match(r\'(\\w+)\\(\' , action_str)
+                tool_name_match = re.match(r'(\w+)\(', action_str)
                 if tool_name_match:
                     tool_name = tool_name_match.group(1)
                     args_str = action_str[len(tool_name) + 1:-1] # Remove tool_name() and get content inside
