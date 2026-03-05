@@ -18,7 +18,7 @@ class BaseAgent(BaseModel, ABC):
     """
 
     # Core attributes
-    name: str = Field(..., description="Unique name of the agent")
+    name: str = Field(..., description="The name of the agent")
     description: Optional[str] = Field(None, description="Optional agent description")
 
     # Prompts

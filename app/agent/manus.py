@@ -1,9 +1,12 @@
+import re
+import json
 from typing import Dict, List, Optional
 
 from pydantic import Field, model_validator
 
 from app.agent.browser import BrowserContextHelper
 from app.agent.toolcall import ToolCallAgent
+from app.schema import FunctionCall, ToolCall
 from app.config import config
 from app.logger import logger
 from app.prompt.manus import NEXT_STEP_PROMPT, SYSTEM_PROMPT
@@ -157,9 +160,87 @@ class Manus(ToolCallAgent):
                 await self.browser_context_helper.format_next_step_prompt()
             )
 
-        result = await super().think()
+        # Get response with tool options
+        response = await self.llm.ask_tool(
+            messages=self.messages,
+            system_msgs=(
+                [Message.system_message(self.system_prompt)]
+                if self.system_prompt
+                else None
+            ),
+            tools=self.available_tools.to_params(),
+            tool_choice=self.tool_choices,
+        )
 
-        # Restore original prompt
+        content = response.content if response and response.content else ""
+        self.tool_calls = tool_calls = (
+            response.tool_calls if response and response.tool_calls else []
+        )
+
+        # Log raw response for debugging
+        logger.info(f"✨ {self.name}\'s raw LLM response: {content}")
+
+        # Parse structured output
+        observation_match = re.search(r\'\\*\\*观察 \\(Observation\\)\\*\\*:([\\s\\S]*?)(?=\\n\\*\\*思考 \\(Thought\\)\\*\\*|$)\\' , content)
+        thought_match = re.search(r\'\\*\\*思考 \\(Thought\\)\\*\\*:([\\s\\S]*?)(?=\\n\\*\\*计划 \\(Plan\\)\\*\\*|$)\\' , content)
+        plan_match = re.search(r\'\\*\\*计划 \\(Plan\\)\\*\\*:([\\s\\S]*?)(?=\\n\\*\\*行动 \\(Action\\)\\*\\*|$)\\' , content)
+        action_match = re.search(r\'\\*\\*行动 \\(Action\\)\\*\\*:([\\s\\S]*?)(?=\\n\\*\\*回答 \\(Answer\\)\\*\\*|$)\\' , content)
+        answer_match = re.search(r\'\\*\\*回答 \\(Answer\\)\\*\\*:([\\s\\S]*)$\', content)
+
+        observation = observation_match.group(1).strip() if observation_match else ""
+        thought = thought_match.group(1).strip() if thought_match else ""
+        plan = plan_match.group(1).strip() if plan_match else ""
+        action_str = action_match.group(1).strip() if action_match else ""
+        answer = answer_match.group(1).strip() if answer_match else ""
+
+        logger.info(f"\\n--- Structured Thinking ---")
+        logger.info(f"Observation: {observation}")
+        logger.info(f"Thought: {thought}")
+        logger.info(f"Plan: {plan}")
+        logger.info(f"Action: {action_str}")
+        logger.info(f"Answer: {answer}")
+        logger.info(f"---------------------------")
+
+        # Update memory with the LLM\'s thought process
+        self.memory.add_message(Message.assistant_message(content))
+
+        # If there\'s an answer and no explicit tool action, we can finish
+        if answer and not action_str and not tool_calls:
+            self.state = AgentState.FINISHED
+            return False
+
+        # If there\'s an action string, try to parse it into tool calls
+        if action_str:
+            try:
+                # Assuming action_str might contain a single tool call in the format tool_name(param1=value1, ...)
+                # This is a simplified parsing. A more robust solution might involve a dedicated parser or JSON output for actions.
+                tool_name_match = re.match(r\'(\\w+)\\(\' , action_str)
+                if tool_name_match:
+                    tool_name = tool_name_match.group(1)
+                    args_str = action_str[len(tool_name) + 1:-1] # Remove tool_name() and get content inside
+                    # Attempt to parse arguments as JSON, if not, treat as string
+                    try:
+                        args = json.loads(args_str)
+                    except json.JSONDecodeError:
+                        # If not valid JSON, assume it\'s a single string argument or handle as needed
+                        args = {"input": args_str} # Fallback to a generic input argument
+
+                    # Create a dummy ToolCall object for execution
+                    # This part might need adjustment based on the actual ToolCall schema
+                    # For now, we\'ll create a basic one for demonstration
+                    from app.schema import FunctionCall
+                    function_call = FunctionCall(name=tool_name, arguments=json.dumps(args))
+                    self.tool_calls = [ToolCall(id="call_structured_action", function=function_call)]
+                    logger.info(f"Parsed structured action into tool call: {tool_name}({args})")
+                else:
+                    logger.warning(f"Could not parse action string: {action_str}")
+
+            except Exception as e:
+                logger.error(f"Error parsing structured action: {e}")
+                self.memory.add_message(Message.assistant_message(f"Error parsing structured action: {e}"))
+                return False
+
+        # Restore original prompt (though it\'s less relevant now with structured thinking)
         self.next_step_prompt = original_prompt
 
-        return result
+        return bool(self.tool_calls)
