@@ -133,13 +133,9 @@ def instrument_agent(agent: Manus, task_id: str):
             "tool_names": tool_names,
             "will_act": result,
         })
-
-        if thoughts:
-            push_event(task_id, {
-                "type": "message",
-                "content": thoughts,
-            })
-
+        # NOTE: Do NOT push a 'message' event here.
+        # Intermediate thoughts from each step are shown in the terminal panel.
+        # The final assistant reply is sent once via task_done.result.
         return result
 
     async def patched_act() -> str:
@@ -208,16 +204,23 @@ async def run_agent_and_stream(task_id: str, prompt: str) -> AsyncGenerator[str,
             instrument_agent(agent, task_id)
             tasks_store[task_id]["status"] = "running"
 
-            push_event(task_id, {
-                "type": "message",
-                "content": f"正在处理你的请求：「{prompt}」",
-            })
-
             result = await agent.run(prompt)
 
+            # Extract the last assistant message as the final reply
+            final_reply = ""
+            if agent.memory and agent.memory.messages:
+                for msg in reversed(agent.memory.messages):
+                    if msg.role == "assistant" and msg.content and msg.content.strip():
+                        final_reply = msg.content.strip()
+                        break
+
             tasks_store[task_id]["status"] = "completed"
-            tasks_store[task_id]["result"] = result
-            await q.put({"type": "task_done", "status": "completed", "result": result[:2000] if result else ""})
+            tasks_store[task_id]["result"] = final_reply or result or ""
+            await q.put({
+                "type": "task_done",
+                "status": "completed",
+                "result": (final_reply or result or "")[:4000],
+            })
         except Exception as e:
             error_msg = f"{str(e)}\n{traceback.format_exc()}"
             tasks_store[task_id]["status"] = "failed"

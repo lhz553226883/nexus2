@@ -418,16 +418,11 @@ export function AgentProvider({ children }: { children: React.ReactNode }) {
             }
           }
 
-          // ── message: Assistant text content ──
-          else if (event.type === "message" && event.content) {
-            updateMessage(taskId, assistantMsgId, (m) => ({
-              ...m,
-              content:
-                m.content +
-                (m.content ? "\n\n" : "") +
-                event.content,
-            }));
-          }
+          // ── message: Assistant text content (overwrite, not append) ──
+          // We intentionally ignore mid-stream message events here.
+          // The final reply arrives via task_done.result and is set there.
+          // This prevents duplicate/repeated content from each think step.
+          // else if (event.type === "message") { ... }
 
           // ── log: Agent log lines ──
           else if (event.type === "log" && event.content) {
@@ -443,6 +438,13 @@ export function AgentProvider({ children }: { children: React.ReactNode }) {
             event.type === "task_done" ||
             event.type === "stream_end"
           ) {
+            // Set the final reply from task_done.result (overwrite, not append)
+            if (event.type === "task_done" && event.result && event.result.trim()) {
+              updateMessage(taskId, assistantMsgId, (m) => ({
+                ...m,
+                content: event.result!.trim(),
+              }));
+            }
             const finalStatus =
               event.status === "failed" ? "failed" : "completed";
             finalizeRun(taskId, assistantMsgId, finalStatus);
