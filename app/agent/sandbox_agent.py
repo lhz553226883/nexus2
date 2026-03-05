@@ -74,12 +74,9 @@ class SandboxManus(ToolCallAgent):
         password: str = config.daytona.VNC_password,
     ) -> None:
         try:
-            # 创建新沙箱
-            if password:
-                sandbox = create_sandbox(password=password)
-                self.sandbox = sandbox
-            else:
-                raise ValueError("password must be provided")
+            # 创建新沙箱（password 为 None 时 create_sandbox 内部会自动生成）
+            sandbox = create_sandbox(password=password)
+            self.sandbox = sandbox
             vnc_link = sandbox.get_preview_link(6080)
             website_link = sandbox.get_preview_link(8080)
             vnc_url = vnc_link.url if hasattr(vnc_link, "url") else str(vnc_link)

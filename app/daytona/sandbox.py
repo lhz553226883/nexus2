@@ -1,5 +1,8 @@
 import time
 
+import secrets
+import string
+
 from daytona import (
     CreateSandboxFromImageParams,
     Daytona,
@@ -99,11 +102,22 @@ def start_supervisord_session(sandbox: Sandbox):
         raise e
 
 
-def create_sandbox(password: str, project_id: str = None):
+def _generate_password(length: int = 12) -> str:
+    """Generate a random secure password."""
+    alphabet = string.ascii_letters + string.digits
+    return "".join(secrets.choice(alphabet) for _ in range(length))
+
+
+def create_sandbox(password: str = None, project_id: str = None):
     """Create a new sandbox with all required services configured and running."""
 
     logger.info("Creating new Daytona sandbox environment")
     logger.info("Configuring sandbox with browser-use image and environment variables")
+
+    # Auto-generate password if not provided
+    if not password:
+        password = _generate_password()
+        logger.info(f"VNC password auto-generated (not set in config): {password}")
 
     labels = None
     if project_id:

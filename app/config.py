@@ -120,7 +120,7 @@ class DaytonaSettings(BaseModel):
     #     None, description="ID of the daytona sandbox to use, if any"
     # )
     VNC_password: Optional[str] = Field(
-        "123456", description="VNC password for the vnc service in sandbox"
+        None, description="VNC password for the vnc service in sandbox. If not set, a random password will be generated automatically."
     )
 
 
