@@ -1,53 +1,83 @@
 // Nexus UI — Backend API Client
-// Handles: health check, SSE task streaming
+// Connects to api_server.py (POST /api/tasks → SSE stream)
+// Backend default: http://localhost:8765
 
-// ── SSE Event Types ────────────────────────────────────────────────────────────
+// ── SSE Event Types (matches api_server.py push_event calls) ─────────────────
 
 export interface SSEEvent {
   type:
+    | "task_start"
     | "step_start"
     | "step_end"
     | "think"
+    | "act_start"
     | "tool_start"
     | "tool_end"
     | "message"
     | "log"
     | "task_done"
     | "task_error"
-    | "stream_end";
-  // step_start / step_end / think / tool_start / tool_end
+    | "stream_end"
+    | "heartbeat";
+
+  // task_start
+  task_id?: string;
+  prompt?: string;
+
+  // step_start / step_end / think / act_start / tool_start / tool_end
   step?: number;
   title?: string;
+
+  // think
   thoughts?: string;
   tool_names?: string[];
+  will_act?: boolean;
+
+  // act_start
+  tool_count?: number;
+
+  // tool_start / tool_end
   tool_name?: string;
   tool_args?: string;
   tool_result?: string;
+
   // message
   content?: string;
+
   // log
-  level?: "info" | "warning" | "error" | "critical";
+  level?: "info" | "warning" | "error" | "critical" | "debug" | "success";
+
   // task_done / stream_end
   status?: "completed" | "failed";
+  result?: string;
+
   // task_error
   error?: string;
 }
 
 // ── Configuration ──────────────────────────────────────────────────────────────
 
-const BACKEND_BASE_URL =
-  (import.meta.env.VITE_BACKEND_URL as string | undefined) ??
-  "http://localhost:8000";
+function getBackendUrl(): string {
+  // In dev mode, Vite proxies /api and /health to localhost:8765
+  // In production, backend is served from same origin
+  // VITE_BACKEND_URL can override for custom deployments
+  const envUrl = (import.meta.env.VITE_BACKEND_URL as string | undefined);
+  if (envUrl) return envUrl.replace(/\/$/, "");
+  // Use relative path — works with both Vite proxy (dev) and same-origin (prod)
+  return "";
+}
 
 // ── Health check ───────────────────────────────────────────────────────────────
 
 export async function checkBackendHealth(): Promise<boolean> {
   try {
-    const res = await fetch(`${BACKEND_BASE_URL}/health`, {
+    const res = await fetch(`${getBackendUrl()}/health`, {
       method: "GET",
       signal: AbortSignal.timeout(3000),
     });
-    return res.ok;
+    if (!res.ok) return false;
+    const data = await res.json();
+    return data?.status === "ok";
   } catch {
     return false;
   }
@@ -56,8 +86,9 @@ export async function checkBackendHealth(): Promise<boolean> {
 // ── SSE task streaming ─────────────────────────────────────────────────────────
 
 /**
- * Start a streaming task via Server-Sent Events.
- * Returns an AbortController so the caller can cancel the stream.
+ * POST /api/tasks with { prompt }
+ * Streams SSE events back via the response body.
+ * Returns an AbortController so the caller can cancel.
  */
 export function streamTask(
   prompt: string,
@@ -68,15 +99,19 @@ export function streamTask(
 
   (async () => {
     try {
-      const res = await fetch(`${BACKEND_BASE_URL}/api/task/stream`, {
+      const res = await fetch(`${getBackendUrl()}/api/tasks`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          Accept: "text/event-stream",
+        },
         body: JSON.stringify({ prompt }),
         signal: controller.signal,
       });
 
       if (!res.ok) {
-        throw new Error(`HTTP ${res.status}: ${res.statusText}`);
+        const text = await res.text().catch(() => res.statusText);
+        throw new Error(`HTTP ${res.status}: ${text}`);
       }
 
       const reader = res.body?.getReader();
@@ -104,7 +139,7 @@ export function streamTask(
               const event = JSON.parse(data) as SSEEvent;
               onEvent(event);
             } catch {
-              // Ignore malformed JSON lines
+              // Ignore malformed JSON
             }
           }
         }

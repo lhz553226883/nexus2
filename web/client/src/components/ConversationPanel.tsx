@@ -63,7 +63,7 @@ function StepItem({ step }: { step: Step }) {
         {step.status === "failed" && (
           <AlertCircle size={14} className="text-red-400" />
         )}
-        {step.status === "pending" && (
+        {step.status !== "running" && step.status !== "completed" && step.status !== "failed" && (
           <div className="w-3.5 h-3.5 rounded-full border-2 border-gray-200" />
         )}
       </div>

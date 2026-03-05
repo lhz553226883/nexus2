@@ -1,26 +1,18 @@
-// Nexus UI — Main Page
-// Design: Neo-Minimalism, three-panel layout
-// Left: TaskSidebar (240px fixed) | Center: ConversationPanel (flex-1) | Right: ComputerPanel (480px fixed)
-
-import TaskSidebar from "@/components/TaskSidebar";
-import ConversationPanel from "@/components/ConversationPanel";
-import ComputerPanel from "@/components/ComputerPanel";
-import InputBar from "@/components/InputBar";
+// Nexus UI — Main Page (open-webui style)
+import Sidebar from "@/components/Sidebar";
+import ChatArea from "@/components/ChatArea";
+import TerminalPanel from "@/components/TerminalPanel";
+import { useAgent } from "@/contexts/AgentContext";
 
 export default function Home() {
+  const { isPanelOpen } = useAgent();
   return (
-    <div className="flex h-screen overflow-hidden bg-white select-none">
-      {/* Left: Task History Sidebar */}
-      <TaskSidebar />
-
-      {/* Center: Conversation + Input */}
-      <div className="flex-1 flex flex-col overflow-hidden">
-        <ConversationPanel />
-        <InputBar />
+    <div className="flex h-screen overflow-hidden bg-background">
+      <Sidebar />
+      <div className="flex-1 flex flex-col overflow-hidden min-w-0">
+        <ChatArea />
       </div>
-
-      {/* Right: Computer Panel */}
-      <ComputerPanel />
+      {isPanelOpen && <TerminalPanel />}
     </div>
   );
 }
