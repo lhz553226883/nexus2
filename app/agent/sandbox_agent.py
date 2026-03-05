@@ -79,8 +79,13 @@ class SandboxManus(ToolCallAgent):
             self.sandbox = sandbox
             vnc_link = sandbox.get_preview_link(6080)
             website_link = sandbox.get_preview_link(8080)
-            # Sandbox is created with public=True, so preview links require no authentication
-            vnc_url = vnc_link.url if hasattr(vnc_link, "url") else str(vnc_link)
+            raw_vnc_url = vnc_link.url if hasattr(vnc_link, "url") else str(vnc_link)
+            # Append noVNC URL params: autoconnect skips the connect button,
+            # password is passed directly so users don't need to type it manually
+            _vnc_pwd = getattr(sandbox, "_vnc_password", None) or password
+            vnc_url = f"{raw_vnc_url}?autoconnect=true&reconnect=true"
+            if _vnc_pwd:
+                vnc_url += f"&password={_vnc_pwd}"
             website_url = (
                 website_link.url if hasattr(website_link, "url") else str(website_link)
             )

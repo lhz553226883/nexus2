@@ -79,7 +79,7 @@ class SandboxToolsBase(BaseTool):
                     vnc_link = self._sandbox.get_preview_link(6080)
                     website_link = self._sandbox.get_preview_link(8080)
 
-                    vnc_url = (
+                    raw_vnc_url = (
                         vnc_link.url if hasattr(vnc_link, "url") else str(vnc_link)
                     )
                     website_url = (
@@ -87,6 +87,11 @@ class SandboxToolsBase(BaseTool):
                         if hasattr(website_link, "url")
                         else str(website_link)
                     )
+                    # Build auto-login VNC URL with noVNC URL parameters
+                    _vnc_pwd = getattr(self._sandbox, "_vnc_password", None)
+                    vnc_url = f"{raw_vnc_url}?autoconnect=true&reconnect=true"
+                    if _vnc_pwd:
+                        vnc_url += f"&password={_vnc_pwd}"
 
                     print("\033[95m***")
                     print(f"VNC URL: {vnc_url}")

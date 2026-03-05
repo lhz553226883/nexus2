@@ -154,6 +154,9 @@ def create_sandbox(password: str = None, project_id: str = None):
     sandbox = daytona.create(params)
     logger.info(f"Sandbox created with ID: {sandbox.id}")
 
+    # Store the VNC password on the sandbox object so callers can build auto-login URLs
+    object.__setattr__(sandbox, "_vnc_password", password)
+
     # Start supervisord in a session for new sandbox
     start_supervisord_session(sandbox)
 
