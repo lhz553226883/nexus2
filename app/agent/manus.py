@@ -6,7 +6,7 @@ from pydantic import Field, model_validator
 
 from app.agent.browser import BrowserContextHelper
 from app.agent.toolcall import ToolCallAgent
-from app.schema import FunctionCall, ToolCall
+from app.schema import Function, ToolCall
 from app.config import config
 from app.logger import logger
 from app.prompt.manus import NEXT_STEP_PROMPT, SYSTEM_PROMPT
@@ -228,8 +228,8 @@ class Manus(ToolCallAgent):
                     # Create a dummy ToolCall object for execution
                     # This part might need adjustment based on the actual ToolCall schema
                     # For now, we\'ll create a basic one for demonstration
-                    from app.schema import FunctionCall
-                    function_call = FunctionCall(name=tool_name, arguments=json.dumps(args))
+                    
+                    function_call = Function(name=tool_name, arguments=json.dumps(args))
                     self.tool_calls = [ToolCall(id="call_structured_action", function=function_call)]
                     logger.info(f"Parsed structured action into tool call: {tool_name}({args})")
                 else:
