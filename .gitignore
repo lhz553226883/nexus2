@@ -200,3 +200,7 @@ cython_debug/
 
 # node
 node_modules
+
+# Exception: frontend source lib directory must be tracked (not Python lib/)
+!web/client/src/lib/
+!web/client/src/lib/**
