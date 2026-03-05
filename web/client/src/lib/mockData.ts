@@ -208,7 +208,7 @@ export function simulateAgentExecution(prompt: string): AgentEvent[] {
   events.push({ type: "step_end", payload: { stepId: stepId2 } });
 
   // Stream response text
-  const response = `我已收到您的任务：**${prompt.slice(0, 50)}${prompt.length > 50 ? "…" : ""}**\n\n由于当前处于离线模式，这是一个模拟响应。请连接到 OpenManus 后端以获取真实的 AI 执行结果。\n\n如需启动后端，请运行：\n\`\`\`bash\npython run_manus.py\n\`\`\``;
+  const response = `我已收到您的任务：**${prompt.slice(0, 50)}${prompt.length > 50 ? "…" : ""}**\n\n由于当前处于离线模式，这是一个模拟响应。请连接到 OpenManus 后端以获取真实的 AI 执行结果。\n\n如需在本机启动后端（Windows 示例），请确保已按 README_zh.md 中的说明创建并激活虚拟环境，然后在项目根目录运行：\n\`\`\`bash\npython main.py\n\`\`\``;
 
   for (const char of response) {
     events.push({

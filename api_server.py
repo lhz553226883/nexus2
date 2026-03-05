@@ -18,6 +18,7 @@ Nexus API Server — 真正调用 OpenManus Agent 的后端服务
 
 import asyncio
 import json
+import re
 import uuid
 import traceback
 from datetime import datetime
@@ -217,6 +218,41 @@ def instrument_agent(agent: Manus, task_id: str):
                     thoughts = msg.content
                     break
 
+        # Try to parse structured sections from the assistant message so
+        # frontend can display 观察/思考/计划/行动/回答 清晰结构
+        observation = thought = plan = action_str = answer = ""
+        if thoughts:
+            try:
+                observation_match = re.search(
+                    r"\*\*观察(?: \(Observation\))?\*\*:([\s\S]*?)(?=\n\*\*思考(?: \(Thought\))?\*\*|$)",
+                    thoughts,
+                )
+                thought_match = re.search(
+                    r"\*\*思考(?: \(Thought\))?\*\*:([\s\S]*?)(?=\n\*\*计划(?: \(Plan\))?\*\*|$)",
+                    thoughts,
+                )
+                plan_match = re.search(
+                    r"\*\*计划(?: \(Plan\))?\*\*:([\s\S]*?)(?=\n\*\*行动(?: \(Action\))?\*\*|$)",
+                    thoughts,
+                )
+                action_match = re.search(
+                    r"\*\*行动(?: \(Action\))?\*\*:([\s\S]*?)(?=\n\*\*回答(?: \(Answer\))?\*\*|$)",
+                    thoughts,
+                )
+                answer_match = re.search(
+                    r"\*\*回答(?: \(Answer\))?\*\*:([\s\S]*)$",
+                    thoughts,
+                )
+
+                observation = observation_match.group(1).strip() if observation_match else ""
+                thought = thought_match.group(1).strip() if thought_match else ""
+                plan = plan_match.group(1).strip() if plan_match else ""
+                action_str = action_match.group(1).strip() if action_match else ""
+                answer = answer_match.group(1).strip() if answer_match else ""
+            except Exception:
+                # 如果结构解析失败，就退回到原始 thoughts 文本
+                thought = thoughts
+
         tool_names = []
         if agent.tool_calls:
             tool_names = [tc.function.name for tc in agent.tool_calls]
@@ -227,6 +263,12 @@ def instrument_agent(agent: Manus, task_id: str):
             "thoughts": thoughts[:2000] if thoughts else "",
             "tool_names": tool_names,
             "will_act": result,
+            # Structured thinking fields (may be empty if parsing failed)
+            "observation": observation[:1000] if observation else "",
+            "thought": thought[:1000] if thought else "",
+            "plan": plan[:1000] if plan else "",
+            "action": action_str[:1000] if action_str else "",
+            "answer": answer[:2000] if answer else "",
         })
         # NOTE: Do NOT push a 'message' event here.
         # The final assistant reply is sent once via task_done.result.
@@ -329,20 +371,40 @@ async def run_agent_and_stream(task_id: str, prompt: str) -> AsyncGenerator[str,
                 await q.put({"type": "task_done", "status": "completed", "result": "[已停止]"})
                 return
 
-            # Extract the last assistant message as the final reply
+            # Extract the last assistant message as the final reply.
+            # Prefer the structured **回答** section if present, so the user
+            # only sees the final answer text instead of the whole reasoning.
             final_reply = ""
+            full_reasoning = ""
             if agent.memory and agent.memory.messages:
                 for msg in reversed(agent.memory.messages):
                     if msg.role == "assistant" and msg.content and msg.content.strip():
-                        final_reply = msg.content.strip()
+                        content = msg.content.strip()
+                        full_reasoning = content
+                        answer_only = ""
+                        try:
+                            answer_match = re.search(
+                                r"\*\*回答(?: \(Answer\))?\*\*:([\s\S]*)$",
+                                content,
+                            )
+                            if answer_match:
+                                answer_only = answer_match.group(1).strip()
+                        except Exception:
+                            # Fallback to full content if parsing fails
+                            answer_only = ""
+
+                        final_reply = answer_only or content
                         break
 
             tasks_store[task_id]["status"] = "completed"
             tasks_store[task_id]["result"] = final_reply or result or ""
+            if full_reasoning:
+                tasks_store[task_id]["reasoning"] = full_reasoning
             await q.put({
                 "type": "task_done",
                 "status": "completed",
                 "result": (final_reply or result or "")[:4000],
+                "reasoning": (full_reasoning or "")[:4000],
             })
         except Exception as e:
             task = tasks_store.get(task_id, {})

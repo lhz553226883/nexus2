@@ -126,6 +126,49 @@ function UserMessage({ msg }: { msg: ChatMessage }) {
   );
 }
 
+// ── Structured thinking view for a single step ────────────────────────────────
+function StepThinking({ step }: { step: Step }) {
+  const { observation, thought, plan, action, answer } = step;
+  const hasStructured =
+    !!observation || !!thought || !!plan || !!action || !!answer;
+  if (!hasStructured) return null;
+
+  return (
+    <div className="mt-1.5 ml-4 space-y-0.5 text-[11px] text-muted-foreground">
+      {observation && (
+        <div>
+          <span className="font-semibold text-foreground/80">观察：</span>
+          <span>{observation}</span>
+        </div>
+      )}
+      {thought && (
+        <div>
+          <span className="font-semibold text-foreground/80">思考：</span>
+          <span>{thought}</span>
+        </div>
+      )}
+      {plan && (
+        <div>
+          <span className="font-semibold text-foreground/80">计划：</span>
+          <span>{plan}</span>
+        </div>
+      )}
+      {action && (
+        <div>
+          <span className="font-semibold text-foreground/80">行动：</span>
+          <span>{action}</span>
+        </div>
+      )}
+      {answer && (
+        <div>
+          <span className="font-semibold text-foreground/80">回答：</span>
+          <span>{answer}</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Assistant message ─────────────────────────────────────────────────────────
 function AssistantMessage({ msg }: { msg: ChatMessage }) {
   const hasSteps = msg.steps && msg.steps.length > 0;
@@ -142,11 +185,14 @@ function AssistantMessage({ msg }: { msg: ChatMessage }) {
         {msg.isStreaming && <TypingIndicator />}
       </div>
 
-      {/* Steps */}
+      {/* Steps + structured thinking */}
       {hasSteps && (
         <div className="mb-3 ml-8 pl-3 border-l-2 border-border space-y-0.5">
           {msg.steps!.map((step) => (
-            <StepItem key={step.id} step={step} />
+            <div key={step.id}>
+              <StepItem step={step} />
+              <StepThinking step={step} />
+            </div>
           ))}
         </div>
       )}

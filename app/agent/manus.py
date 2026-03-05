@@ -6,10 +6,11 @@ from pydantic import Field, model_validator
 
 from app.agent.browser import BrowserContextHelper
 from app.agent.toolcall import ToolCallAgent
-from app.schema import Function, ToolCall
 from app.config import config
+from app.exceptions import TokenLimitExceeded
 from app.logger import logger
 from app.prompt.manus import NEXT_STEP_PROMPT, SYSTEM_PROMPT
+from app.schema import AgentState, Function, Message, ToolCall
 from app.tool import Terminate, ToolCollection
 from app.tool.ask_human import AskHuman
 from app.tool.browser_use_tool import BrowserUseTool
@@ -203,11 +204,28 @@ class Manus(ToolCallAgent):
         logger.info(f"✨ {self.name}\'s raw LLM response: {content}")
 
         # Parse structured output
-        observation_match = re.search(r'\*\*观察 \(Observation\)\*\*:([\s\S]*?)(?=\n\*\*思考 \(Thought\)\*\*|$)', content)
-        thought_match = re.search(r'\*\*思考 \(Thought\)\*\*:([\s\S]*?)(?=\n\*\*计划 \(Plan\)\*\*|$)', content)
-        plan_match = re.search(r'\*\*计划 \(Plan\)\*\*:([\s\S]*?)(?=\n\*\*行动 \(Action\)\*\*|$)', content)
-        action_match = re.search(r'\*\*行动 \(Action\)\*\*:([\s\S]*?)(?=\n\*\*回答 \(Answer\)\*\*|$)', content)
-        answer_match = re.search(r'\*\*回答 \(Answer\)\*\*:([\s\S]*)$', content)
+        # Support both bilingual headings like "**观察 (Observation)**" and
+        # pure-Chinese headings like "**观察**" etc.
+        observation_match = re.search(
+            r"\*\*观察(?: \(Observation\))?\*\*:([\s\S]*?)(?=\n\*\*思考(?: \(Thought\))?\*\*|$)",
+            content,
+        )
+        thought_match = re.search(
+            r"\*\*思考(?: \(Thought\))?\*\*:([\s\S]*?)(?=\n\*\*计划(?: \(Plan\))?\*\*|$)",
+            content,
+        )
+        plan_match = re.search(
+            r"\*\*计划(?: \(Plan\))?\*\*:([\s\S]*?)(?=\n\*\*行动(?: \(Action\))?\*\*|$)",
+            content,
+        )
+        action_match = re.search(
+            r"\*\*行动(?: \(Action\))?\*\*:([\s\S]*?)(?=\n\*\*回答(?: \(Answer\))?\*\*|$)",
+            content,
+        )
+        answer_match = re.search(
+            r"\*\*回答(?: \(Answer\))?\*\*:([\s\S]*)$",
+            content,
+        )
 
         observation = observation_match.group(1).strip() if observation_match else ""
         thought = thought_match.group(1).strip() if thought_match else ""
@@ -223,7 +241,19 @@ class Manus(ToolCallAgent):
         logger.info(f"Answer: {answer}")
         logger.info(f"---------------------------")
 
-        # Update memory with the LLM\'s thought process
+        # Detect trivial无限循环：如果本轮内容与上一条 assistant 消息完全相同，就直接结束。
+        last_assistant = None
+        if self.memory and self.memory.messages:
+            for msg in reversed(self.memory.messages):
+                if msg.role == "assistant" and msg.content:
+                    last_assistant = msg.content.strip()
+                    break
+        if last_assistant and last_assistant == content.strip():
+            logger.info("⚠️ Detected repeated assistant content, stopping to avoid infinite thinking loop.")
+            self.state = AgentState.FINISHED
+            return False
+
+        # Update memory with the LLM's thought process
         # We add the full content here, as the structured output is part of the content
         self.memory.add_message(Message.assistant_message(content))
 

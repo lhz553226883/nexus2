@@ -307,7 +307,7 @@ export function AgentProvider({ children }: { children: React.ReactNode }) {
             );
           }
 
-          // ── think: LLM returned thoughts and tool selection ──
+          // ── think: LLM returned structured thinking (观察/思考/计划/行动/回答) and tool selection ──
           else if (event.type === "think" && event.step !== undefined) {
             const stepId = stepIdMap[event.step];
             if (stepId) {
@@ -328,9 +328,33 @@ export function AgentProvider({ children }: { children: React.ReactNode }) {
                 ),
               }));
             }
-            if (event.thoughts) {
-              addTerminalLine(`💭 ${event.thoughts.slice(0, 200)}`, "output");
+            // Prefer structured fields if present, fall back to raw thoughts.
+            // Also store them on the Step so the main chat UI can render them.
+            const observation = (event as any).observation as string | undefined;
+            const thought = (event as any).thought as string | undefined;
+            const plan = (event as any).plan as string | undefined;
+            const action = (event as any).action as string | undefined;
+            const answer = (event as any).answer as string | undefined;
+
+            if (stepId && (observation || thought || plan || action || answer)) {
+              updateMessage(taskId, assistantMsgId, (m) => ({
+                ...m,
+                steps: (m.steps || []).map((s) =>
+                  s.id === stepId
+                    ? {
+                        ...s,
+                        observation: observation ?? s.observation,
+                        thought: thought ?? s.thought,
+                        plan: plan ?? s.plan,
+                        action: action ?? s.action,
+                        answer: answer ?? s.answer,
+                      }
+                    : s,
+                ),
+              }));
             }
+
+            // We now显示思考过程在步骤面板中，而不是终端。
             // If will_act is false, the step won't call act(), so we complete it here
             if (event.will_act === false && stepIdMap[event.step!]) {
               const stepId = stepIdMap[event.step!];

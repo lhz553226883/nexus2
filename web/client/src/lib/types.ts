@@ -31,6 +31,12 @@ export interface Step {
   toolCalls: ToolCall[];
   expanded: boolean;
   timestamp: number;
+  // Optional structured thinking fields (from backend "think" events)
+  observation?: string;
+  thought?: string;
+  plan?: string;
+  action?: string;
+  answer?: string;
 }
 
 export interface ChatMessage {
