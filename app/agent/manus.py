@@ -146,11 +146,7 @@ class Manus(ToolCallAgent):
             await self.initialize_mcp_servers()
             self._initialized = True
 
-        # Store the original next_step_prompt for potential restoration if needed later.
-        # However, with structured thinking in system_prompt, this might be less critical.
-        original_next_step_prompt_value = self.next_step_prompt
-
-        # Handle browser context if in use. This will update self.next_step_prompt with browser-specific context.
+        original_prompt = self.next_step_prompt
         recent_messages = self.memory.messages[-3:] if self.memory.messages else []
         browser_in_use = any(
             tc.function.name == BrowserUseTool().name
@@ -163,23 +159,15 @@ class Manus(ToolCallAgent):
             self.next_step_prompt = (
                 await self.browser_context_helper.format_next_step_prompt()
             )
-        else:
-            # If browser is not in use, and next_step_prompt was modified, reset it to empty
-            # as structured thinking is now in system_prompt.
-            self.next_step_prompt = ""
 
-        # Prepare messages for the LLM call.
-        # The system_prompt now contains the structured thinking instructions.
-        # The self.messages already contain the conversation history, including the initial user query.
-        # If there's additional context from browser (in self.next_step_prompt), add it as a user message.
-        messages_for_llm = list(self.messages) # Create a copy to avoid modifying self.messages directly for this call
-        if self.next_step_prompt:
-            messages_for_llm.append(Message.user_message(self.next_step_prompt))
+        # Add the next_step_prompt as a user message to guide the LLM
+        user_msg = Message.user_message(self.next_step_prompt)
+        self.messages.append(user_msg)
 
         try:
             # Get response with tool options
             response = await self.llm.ask_tool(
-                messages=messages_for_llm,
+                messages=self.messages,
                 system_msgs=(
                     [Message.system_message(self.system_prompt)]
                     if self.system_prompt
@@ -267,8 +255,6 @@ class Manus(ToolCallAgent):
                 self.memory.add_message(Message.assistant_message(f"Error parsing structured action: {e}"))
                 return False
 
-        # Restore original prompt (though it\'s less relevant now with structured thinking)
-        # This line is now redundant as the prompt is added to messages directly.
-        # self.next_step_prompt = original_prompt
-
+        # Restore original prompt
+        self.next_step_prompt = original_prompt
         return bool(self.tool_calls)
