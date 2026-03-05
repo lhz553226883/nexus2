@@ -89,7 +89,8 @@ class SandboxToolsBase(BaseTool):
                     )
                     # Build auto-login VNC URL with noVNC URL parameters
                     _vnc_pwd = getattr(self._sandbox, "_vnc_password", None)
-                    vnc_url = f"{raw_vnc_url}?autoconnect=true&reconnect=true"
+                    # reconnect_delay=3000: wait 3s before reconnecting to reduce black screen flash
+                    vnc_url = f"{raw_vnc_url}?autoconnect=true&reconnect=true&reconnect_delay=3000"
                     if _vnc_pwd:
                         vnc_url += f"&password={_vnc_pwd}"
 

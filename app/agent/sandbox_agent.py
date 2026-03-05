@@ -83,7 +83,8 @@ class SandboxManus(ToolCallAgent):
             # Append noVNC URL params: autoconnect skips the connect button,
             # password is passed directly so users don't need to type it manually
             _vnc_pwd = getattr(sandbox, "_vnc_password", None) or password
-            vnc_url = f"{raw_vnc_url}?autoconnect=true&reconnect=true"
+            # reconnect_delay=3000: wait 3s before reconnecting to reduce black screen flash
+            vnc_url = f"{raw_vnc_url}?autoconnect=true&reconnect=true&reconnect_delay=3000"
             if _vnc_pwd:
                 vnc_url += f"&password={_vnc_pwd}"
             website_url = (
