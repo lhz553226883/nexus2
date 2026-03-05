@@ -79,6 +79,7 @@ class SandboxManus(ToolCallAgent):
             self.sandbox = sandbox
             vnc_link = sandbox.get_preview_link(6080)
             website_link = sandbox.get_preview_link(8080)
+            # Sandbox is created with public=True, so preview links require no authentication
             vnc_url = vnc_link.url if hasattr(vnc_link, "url") else str(vnc_link)
             website_url = (
                 website_link.url if hasattr(website_link, "url") else str(website_link)
