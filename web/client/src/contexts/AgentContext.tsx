@@ -28,7 +28,7 @@ import {
   generateTaskTitle,
   AgentEvent,
 } from "@/lib/mockData";
-import { checkBackendHealth, streamTask, SSEEvent } from "@/lib/api";
+import { checkBackendHealth, streamTask, stopBackendTask, SSEEvent } from "@/lib/api";
 
 interface AgentContextValue {
   tasks: Task[];
@@ -65,7 +65,7 @@ export function AgentProvider({ children }: { children: React.ReactNode }) {
   const runningRef = useRef(false);
   const abortRef = useRef<AbortController | null>(null);
   // Track the current task+msg for cleanup on stop
-  const activeRunRef = useRef<{ taskId: string; msgId: string } | null>(null);
+  const activeRunRef = useRef<{ taskId: string; msgId: string; backendTaskId?: string } | null>(null);
 
   const activeTask = tasks.find((t) => t.id === activeTaskId) ?? null;
 
@@ -277,8 +277,15 @@ export function AgentProvider({ children }: { children: React.ReactNode }) {
       const controller = streamTask(
         prompt,
         (event: SSEEvent) => {
+          // ── task_start: capture backend task_id for stop API ──
+          if (event.type === "task_start" && event.task_id) {
+            if (activeRunRef.current) {
+              activeRunRef.current.backendTaskId = event.task_id;
+            }
+          }
+
           // ── step_start: Agent begins a new step ──
-          if (event.type === "step_start" && event.step !== undefined) {
+          else if (event.type === "step_start" && event.step !== undefined) {
             const stepId = nanoid();
             stepIdMap[event.step] = stepId;
             const step: Step = {
@@ -506,18 +513,21 @@ export function AgentProvider({ children }: { children: React.ReactNode }) {
   // ── stopTask ──────────────────────────────────────────────────────────────────
   const stopTask = useCallback(() => {
     if (!runningRef.current) return;
-    // Abort the SSE stream
+    // 1. Notify backend to stop the agent (fire-and-forget)
+    if (activeRunRef.current?.backendTaskId) {
+      stopBackendTask(activeRunRef.current.backendTaskId).catch(() => {});
+    }
+    // 2. Abort the SSE stream so no more events arrive
     if (abortRef.current) {
       abortRef.current.abort();
       abortRef.current = null;
     }
-    // Finalize state immediately
+    // 3. Finalize UI state immediately
     if (activeRunRef.current) {
       const { taskId, msgId } = activeRunRef.current;
       finalizeRun(taskId, msgId, "stopped");
       addTerminalLine("⏹ Task stopped by user", "output");
     } else {
-      // Fallback: just clear running state
       setIsRunning(false);
       runningRef.current = false;
       activeRunRef.current = null;

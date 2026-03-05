@@ -10,6 +10,7 @@ Nexus API Server — 真正调用 OpenManus Agent 的后端服务
 
 接口：
   POST /api/tasks          - 创建新任务并开始执行（SSE 流式返回）
+  POST /api/tasks/{id}/stop - 停止正在执行的任务
   GET  /api/tasks          - 获取任务历史列表
   GET  /api/tasks/{id}     - 获取单个任务详情
   GET  /health             - 健康检查
@@ -62,7 +63,8 @@ loguru_logger.add(loguru_sse_sink, level="INFO", format="{message}")
 
 # ─── Import OpenManus ─────────────────────────────────────────────────────────
 from app.agent.manus import Manus
-from app.schema import AgentState
+from app.schema import AgentState, Message
+from app.llm import LLM
 from app.logger import logger
 
 # ─── App setup ───────────────────────────────────────────────────────────────
@@ -79,6 +81,10 @@ app.add_middleware(
 # ─── In-memory task store ─────────────────────────────────────────────────────
 tasks_store: Dict[str, dict] = {}
 
+# ─── Active agent registry (for stop support) ────────────────────────────────
+# Maps task_id -> Manus agent instance currently running
+_active_agents: Dict[str, Manus] = {}
+
 # ─── Models ──────────────────────────────────────────────────────────────────
 class CreateTaskRequest(BaseModel):
     prompt: str
@@ -88,6 +94,92 @@ def sse_format(data: dict) -> str:
     return f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
 
 
+# ─── Simple chat classifier ───────────────────────────────────────────────────
+# Keywords/patterns that indicate a simple conversational message
+# that doesn't require Agent tool use.
+_SIMPLE_CHAT_PATTERNS = [
+    # Greetings
+    "你好", "hi", "hello", "hey", "嗨", "哈喽", "早上好", "下午好", "晚上好",
+    "早安", "晚安", "good morning", "good night", "good afternoon",
+    # Thanks
+    "谢谢", "感谢", "thanks", "thank you", "thx",
+    # Farewells
+    "再见", "拜拜", "bye", "goodbye", "see you",
+    # Acknowledgements
+    "好的", "ok", "okay", "明白", "收到", "知道了", "好", "嗯", "哦",
+    # Simple questions about the assistant
+    "你是谁", "你叫什么", "你能做什么", "介绍一下你自己", "你是什么",
+    "who are you", "what can you do", "what are you",
+]
+
+def is_simple_chat(prompt: str) -> bool:
+    """
+    Returns True if the prompt is a simple conversational message
+    that should be answered directly by LLM without Agent tool steps.
+    """
+    text = prompt.strip().lower()
+    # Very short messages (≤ 15 chars) are likely simple chat
+    if len(text) <= 15:
+        return True
+    # Check for known simple patterns
+    for pattern in _SIMPLE_CHAT_PATTERNS:
+        if pattern in text:
+            return True
+    return False
+
+
+async def run_simple_chat(task_id: str, prompt: str) -> AsyncGenerator[str, None]:
+    """
+    Handle simple conversational prompts directly via LLM.ask(),
+    bypassing the full Agent loop entirely — no steps, no tools.
+    """
+    q: asyncio.Queue = asyncio.Queue(maxsize=100)
+    event_queues[task_id] = q
+
+    yield sse_format({"type": "task_start", "task_id": task_id, "prompt": prompt})
+
+    async def _run():
+        try:
+            llm = LLM()
+            reply = await llm.ask(
+                messages=[{"role": "user", "content": prompt}],
+                system_msgs=[{
+                    "role": "system",
+                    "content": (
+                        "你是 Nexus，一个全能的 AI 助手。"
+                        "请用简洁、自然的语气回复用户。"
+                        "如果用户只是打招呼或闲聊，直接友好地回应即可，不要列举功能清单。"
+                    ),
+                }],
+                stream=False,
+            )
+            tasks_store[task_id]["status"] = "completed"
+            tasks_store[task_id]["result"] = reply
+            await q.put({"type": "task_done", "status": "completed", "result": reply})
+        except Exception as e:
+            tasks_store[task_id]["status"] = "failed"
+            tasks_store[task_id]["error"] = str(e)
+            await q.put({"type": "task_error", "error": str(e)})
+        finally:
+            await q.put(None)
+
+    asyncio.create_task(_run())
+
+    while True:
+        try:
+            event = await asyncio.wait_for(q.get(), timeout=60.0)
+        except asyncio.TimeoutError:
+            yield sse_format({"type": "heartbeat"})
+            continue
+        if event is None:
+            break
+        yield sse_format(event)
+
+    task = tasks_store.get(task_id, {})
+    yield sse_format({"type": "stream_end", "status": task.get("status", "completed"), "task_id": task_id})
+    event_queues.pop(task_id, None)
+
+
 def instrument_agent(agent: Manus, task_id: str):
     """
     Monkey-patch the agent's think/act methods to emit structured SSE events.
@@ -95,15 +187,19 @@ def instrument_agent(agent: Manus, task_id: str):
     - step_start / step_end
     - think (LLM thoughts + tool selection)
     - tool_start / tool_end (each tool call)
-    - message content (assistant text)
     """
     original_think = agent.think
     original_act = agent.act
     original_execute_tool = agent.execute_tool
 
     async def patched_think() -> bool:
+        # If task was stopped, set agent state to FINISHED to break the loop
+        task = tasks_store.get(task_id, {})
+        if task.get("status") == "stopped":
+            agent.state = AgentState.FINISHED
+            return False
+
         step_num = agent.current_step
-        # Emit step start
         push_event(task_id, {
             "type": "step_start",
             "step": step_num,
@@ -113,7 +209,6 @@ def instrument_agent(agent: Manus, task_id: str):
         result = await original_think()
 
         # Extract thoughts and tool calls from the LLM response
-        # The think() method stores tool_calls on the agent
         thoughts = ""
         if agent.memory.messages:
             last_msgs = agent.memory.messages[-3:]
@@ -134,11 +229,16 @@ def instrument_agent(agent: Manus, task_id: str):
             "will_act": result,
         })
         # NOTE: Do NOT push a 'message' event here.
-        # Intermediate thoughts from each step are shown in the terminal panel.
         # The final assistant reply is sent once via task_done.result.
         return result
 
     async def patched_act() -> str:
+        # If task was stopped, abort immediately
+        task = tasks_store.get(task_id, {})
+        if task.get("status") == "stopped":
+            agent.state = AgentState.FINISHED
+            return ""
+
         step_num = agent.current_step
         push_event(task_id, {
             "type": "act_start",
@@ -147,6 +247,12 @@ def instrument_agent(agent: Manus, task_id: str):
         })
 
         result = await original_act()
+
+        # Check again after act (tools may have taken a while)
+        task = tasks_store.get(task_id, {})
+        if task.get("status") == "stopped":
+            agent.state = AgentState.FINISHED
+            return result
 
         push_event(task_id, {
             "type": "step_end",
@@ -157,6 +263,11 @@ def instrument_agent(agent: Manus, task_id: str):
         return result
 
     async def patched_execute_tool(command) -> str:
+        # If task was stopped, skip tool execution
+        task = tasks_store.get(task_id, {})
+        if task.get("status") == "stopped":
+            return "[Task stopped by user]"
+
         name = command.function.name if command and command.function else "unknown"
         args_str = command.function.arguments if command and command.function else "{}"
 
@@ -168,6 +279,11 @@ def instrument_agent(agent: Manus, task_id: str):
         })
 
         result = await original_execute_tool(command)
+
+        # Check again after tool execution
+        task = tasks_store.get(task_id, {})
+        if task.get("status") == "stopped":
+            return result
 
         push_event(task_id, {
             "type": "tool_end",
@@ -201,10 +317,17 @@ async def run_agent_and_stream(task_id: str, prompt: str) -> AsyncGenerator[str,
         try:
             _active_task_id = task_id
             agent = await Manus.create()
+            _active_agents[task_id] = agent
             instrument_agent(agent, task_id)
             tasks_store[task_id]["status"] = "running"
 
             result = await agent.run(prompt)
+
+            # Check if stopped during execution
+            task = tasks_store.get(task_id, {})
+            if task.get("status") == "stopped":
+                await q.put({"type": "task_done", "status": "completed", "result": "[已停止]"})
+                return
 
             # Extract the last assistant message as the final reply
             final_reply = ""
@@ -222,12 +345,16 @@ async def run_agent_and_stream(task_id: str, prompt: str) -> AsyncGenerator[str,
                 "result": (final_reply or result or "")[:4000],
             })
         except Exception as e:
-            error_msg = f"{str(e)}\n{traceback.format_exc()}"
-            tasks_store[task_id]["status"] = "failed"
-            tasks_store[task_id]["error"] = str(e)
-            await q.put({"type": "task_error", "error": str(e)})
+            task = tasks_store.get(task_id, {})
+            if task.get("status") == "stopped":
+                await q.put({"type": "task_done", "status": "completed", "result": "[已停止]"})
+            else:
+                tasks_store[task_id]["status"] = "failed"
+                tasks_store[task_id]["error"] = str(e)
+                await q.put({"type": "task_error", "error": str(e)})
         finally:
             _active_task_id = None
+            _active_agents.pop(task_id, None)
             if agent:
                 try:
                     await agent.cleanup()
@@ -279,6 +406,40 @@ async def get_task(task_id: str):
         raise HTTPException(status_code=404, detail="Task not found")
     return task
 
+@app.post("/api/tasks/{task_id}/stop")
+async def stop_task(task_id: str):
+    """
+    Stop a running task immediately.
+    Sets the task status to 'stopped' so the agent checks and exits
+    at the next think/act/execute_tool checkpoint.
+    """
+    task = tasks_store.get(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    if task.get("status") not in ("running", "pending"):
+        return {"ok": True, "message": "Task is not running"}
+
+    # Mark as stopped — agent will check this flag at every checkpoint
+    tasks_store[task_id]["status"] = "stopped"
+
+    # Also set agent state to FINISHED if it's still alive
+    agent = _active_agents.get(task_id)
+    if agent:
+        try:
+            agent.state = AgentState.FINISHED
+        except Exception:
+            pass
+
+    # Push a stop event so the SSE stream closes cleanly
+    push_event(task_id, {
+        "type": "task_done",
+        "status": "completed",
+        "result": "[已停止]",
+    })
+
+    return {"ok": True, "message": "Task stop signal sent"}
+
 @app.post("/api/tasks")
 async def create_task(req: CreateTaskRequest):
     if not req.prompt.strip():
@@ -292,8 +453,14 @@ async def create_task(req: CreateTaskRequest):
         "created_at": datetime.now().isoformat(),
     }
 
+    # Route to simple chat or full agent based on prompt complexity
+    if is_simple_chat(req.prompt):
+        generator = run_simple_chat(task_id, req.prompt)
+    else:
+        generator = run_agent_and_stream(task_id, req.prompt)
+
     return StreamingResponse(
-        run_agent_and_stream(task_id, req.prompt),
+        generator,
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",

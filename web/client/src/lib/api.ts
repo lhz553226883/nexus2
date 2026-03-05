@@ -83,6 +83,24 @@ export async function checkBackendHealth(): Promise<boolean> {
   }
 }
 
+// ── Stop task ────────────────────────────────────────────────────────────────
+
+/**
+ * POST /api/tasks/{taskId}/stop
+ * Signals the backend to stop the running agent immediately.
+ */
+export async function stopBackendTask(taskId: string): Promise<boolean> {
+  try {
+    const res = await fetch(`${getBackendUrl()}/api/tasks/${taskId}/stop`, {
+      method: "POST",
+      signal: AbortSignal.timeout(5000),
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
 // ── SSE task streaming ─────────────────────────────────────────────────────────
 
 /**
