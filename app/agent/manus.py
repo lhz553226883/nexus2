@@ -146,7 +146,11 @@ class Manus(ToolCallAgent):
             await self.initialize_mcp_servers()
             self._initialized = True
 
-        original_prompt = self.next_step_prompt
+        # Store the original next_step_prompt for potential restoration if needed later.
+        # However, with structured thinking in system_prompt, this might be less critical.
+        original_next_step_prompt_value = self.next_step_prompt
+
+        # Handle browser context if in use. This will update self.next_step_prompt with browser-specific context.
         recent_messages = self.memory.messages[-3:] if self.memory.messages else []
         browser_in_use = any(
             tc.function.name == BrowserUseTool().name
@@ -159,18 +163,48 @@ class Manus(ToolCallAgent):
             self.next_step_prompt = (
                 await self.browser_context_helper.format_next_step_prompt()
             )
+        else:
+            # If browser is not in use, and next_step_prompt was modified, reset it to empty
+            # as structured thinking is now in system_prompt.
+            self.next_step_prompt = ""
 
-        # Get response with tool options
-        response = await self.llm.ask_tool(
-            messages=self.messages,
-            system_msgs=(
-                [Message.system_message(self.system_prompt)]
-                if self.system_prompt
-                else None
-            ),
-            tools=self.available_tools.to_params(),
-            tool_choice=self.tool_choices,
-        )
+        # Prepare messages for the LLM call.
+        # The system_prompt now contains the structured thinking instructions.
+        # The self.messages already contain the conversation history, including the initial user query.
+        # If there's additional context from browser (in self.next_step_prompt), add it as a user message.
+        messages_for_llm = list(self.messages) # Create a copy to avoid modifying self.messages directly for this call
+        if self.next_step_prompt:
+            messages_for_llm.append(Message.user_message(self.next_step_prompt))
+
+        try:
+            # Get response with tool options
+            response = await self.llm.ask_tool(
+                messages=messages_for_llm,
+                system_msgs=(
+                    [Message.system_message(self.system_prompt)]
+                    if self.system_prompt
+                    else None
+                ),
+                tools=self.available_tools.to_params(),
+                tool_choice=self.tool_choices,
+            )
+        except ValueError:
+            raise
+        except Exception as e:
+            # Check if this is a RetryError containing TokenLimitExceeded
+            if hasattr(e, "__cause__") and isinstance(e.__cause__, TokenLimitExceeded):
+                token_limit_error = e.__cause__
+                logger.error(
+                    f"🚨 Token limit error (from RetryError): {token_limit_error}"
+                )
+                self.memory.add_message(
+                    Message.assistant_message(
+                        f"Maximum token limit reached, cannot continue execution: {str(token_limit_error)}"
+                    )
+                )
+                self.state = AgentState.FINISHED
+                return False
+            raise
 
         content = response.content if response and response.content else ""
         self.tool_calls = tool_calls = (
@@ -193,7 +227,7 @@ class Manus(ToolCallAgent):
         action_str = action_match.group(1).strip() if action_match else ""
         answer = answer_match.group(1).strip() if answer_match else ""
 
-        logger.info(f"\\n--- Structured Thinking ---")
+        logger.info(f"\n--- Structured Thinking ---")
         logger.info(f"Observation: {observation}")
         logger.info(f"Thought: {thought}")
         logger.info(f"Plan: {plan}")
@@ -202,6 +236,7 @@ class Manus(ToolCallAgent):
         logger.info(f"---------------------------")
 
         # Update memory with the LLM\'s thought process
+        # We add the full content here, as the structured output is part of the content
         self.memory.add_message(Message.assistant_message(content))
 
         # If there\'s an answer and no explicit tool action, we can finish
@@ -212,23 +247,15 @@ class Manus(ToolCallAgent):
         # If there\'s an action string, try to parse it into tool calls
         if action_str:
             try:
-                # Assuming action_str might contain a single tool call in the format tool_name(param1=value1, ...)
-                # This is a simplified parsing. A more robust solution might involve a dedicated parser or JSON output for actions.
                 tool_name_match = re.match(r'(\w+)\(', action_str)
                 if tool_name_match:
                     tool_name = tool_name_match.group(1)
-                    args_str = action_str[len(tool_name) + 1:-1] # Remove tool_name() and get content inside
-                    # Attempt to parse arguments as JSON, if not, treat as string
+                    args_str = action_str[len(tool_name) + 1:-1]
                     try:
                         args = json.loads(args_str)
                     except json.JSONDecodeError:
-                        # If not valid JSON, assume it\'s a single string argument or handle as needed
-                        args = {"input": args_str} # Fallback to a generic input argument
+                        args = {"input": args_str}
 
-                    # Create a dummy ToolCall object for execution
-                    # This part might need adjustment based on the actual ToolCall schema
-                    # For now, we\'ll create a basic one for demonstration
-                    
                     function_call = Function(name=tool_name, arguments=json.dumps(args))
                     self.tool_calls = [ToolCall(id="call_structured_action", function=function_call)]
                     logger.info(f"Parsed structured action into tool call: {tool_name}({args})")
@@ -241,6 +268,7 @@ class Manus(ToolCallAgent):
                 return False
 
         # Restore original prompt (though it\'s less relevant now with structured thinking)
-        self.next_step_prompt = original_prompt
+        # This line is now redundant as the prompt is added to messages directly.
+        # self.next_step_prompt = original_prompt
 
         return bool(self.tool_calls)
