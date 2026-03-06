@@ -1,0 +1,26 @@
+version: "3.8"
+
+services:
+  sandbox:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: nexus-sandbox:local
+    container_name: nexus-sandbox
+    environment:
+      - DISPLAY=:99
+      - RESOLUTION=1280x800x24
+      # VNC_PASSWORD: 不设置则无需密码直接访问
+      # - VNC_PASSWORD=yourpassword
+    ports:
+      - "6080:6080"   # noVNC Web 界面（浏览器访问 http://localhost:6080）
+      - "5900:5900"   # 原生 VNC 端口（可用 VNC Viewer 连接）
+    volumes:
+      - workspace:/workspace
+    restart: unless-stopped
+    shm_size: "2gb"   # Chrome 需要足够的共享内存
+    cap_add:
+      - SYS_ADMIN     # Chrome sandbox 需要
+
+volumes:
+  workspace:
