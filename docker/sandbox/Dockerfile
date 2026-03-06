@@ -62,7 +62,7 @@ RUN pip3 install --no-cache-dir \
     websockify \
     requests \
     playwright
-
+RUN apt-get install -y scrot imagemagick
 # ── 5. supervisord configuration ─────────────────────────────────────────────
 COPY supervisord.conf /etc/supervisor/conf.d/supervisord.conf
 
