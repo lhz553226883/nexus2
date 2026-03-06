@@ -17,6 +17,7 @@ Nexus API Server — 真正调用 OpenManus Agent 的后端服务
 """
 
 import asyncio
+import base64
 import json
 import re
 import uuid
@@ -333,6 +334,21 @@ def instrument_agent(agent: Manus, task_id: str):
             "tool_name": name,
             "tool_result": result[:1000] if result else "",
         })
+
+        # ── Screenshot: capture sandbox display after each tool execution ──
+        try:
+            from app.sandbox.client import SANDBOX_CLIENT
+            screenshot_bytes = await SANDBOX_CLIENT.take_screenshot()
+            if screenshot_bytes:
+                screenshot_b64 = base64.b64encode(screenshot_bytes).decode("utf-8")
+                push_event(task_id, {
+                    "type": "screenshot",
+                    "step": agent.current_step,
+                    "tool_name": name,
+                    "image": f"data:image/png;base64,{screenshot_b64}",
+                })
+        except Exception:
+            pass  # Screenshot is optional, never block execution
 
         return result
 

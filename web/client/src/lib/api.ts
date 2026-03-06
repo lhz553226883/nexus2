@@ -18,7 +18,11 @@ export interface SSEEvent {
     | "task_done"
     | "task_error"
     | "stream_end"
-    | "heartbeat";
+    | "heartbeat"
+    | "screenshot";
+
+  // screenshot
+  image?: string;
 
   // task_start
   task_id?: string;

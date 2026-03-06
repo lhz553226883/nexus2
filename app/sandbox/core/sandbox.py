@@ -422,6 +422,31 @@ class DockerSandbox:
 
                 return file_content.read()
 
+    async def take_screenshot(self) -> Optional[bytes]:
+        """Takes a screenshot of the sandbox virtual display (requires Xvfb + scrot/imagemagick).
+
+        Returns:
+            PNG image bytes, or None if screenshot is not available.
+        """
+        if not self.container:
+            return None
+        try:
+            # Try scrot first, then imagemagick import, then fail gracefully
+            cmd = (
+                "DISPLAY=:99 scrot -z /tmp/_nexus_ss.png 2>/dev/null && echo ok "
+                "|| DISPLAY=:99 import -window root /tmp/_nexus_ss.png 2>/dev/null && echo ok "
+                "|| echo no_display"
+            )
+            result = await self.run_command(cmd, timeout=5)
+            if "no_display" in (result or "") or "ok" not in (result or ""):
+                return None
+            tar_stream, _ = await asyncio.to_thread(
+                self.container.get_archive, "/tmp/_nexus_ss.png"
+            )
+            return await self._read_from_tar(tar_stream)
+        except Exception:
+            return None
+
     async def cleanup(self) -> None:
         """Cleans up sandbox resources."""
         errors = []

@@ -455,6 +455,16 @@ export function AgentProvider({ children }: { children: React.ReactNode }) {
           // This prevents duplicate/repeated content from each think step.
           // else if (event.type === "message") { ... }
 
+          // ── screenshot: Sandbox display screenshot after tool execution ──
+          else if (event.type === "screenshot" && event.image) {
+            setComputerPanel((prev) => ({
+              ...prev,
+              type: "browser" as const,
+              screenshot: event.image,
+              title: event.tool_name ? `截图 · ${event.tool_name}` : "沙箱截图",
+            }));
+          }
+
           // ── log: Agent log lines ──
           else if (event.type === "log" && event.content) {
             const lineType =

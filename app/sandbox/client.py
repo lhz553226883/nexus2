@@ -182,6 +182,16 @@ class LocalSandboxClient(BaseSandboxClient):
             raise RuntimeError("Sandbox not initialized")
         await self.sandbox.write_file(path, content)
 
+    async def take_screenshot(self) -> Optional[bytes]:
+        """Takes a screenshot of the sandbox virtual display.
+
+        Returns:
+            PNG image bytes, or None if not available (no display or tool missing).
+        """
+        if not self.sandbox:
+            return None
+        return await self.sandbox.take_screenshot()
+
     async def cleanup(self) -> None:
         """Cleans up resources."""
         if self.sandbox:

@@ -148,7 +148,20 @@ export default function ComputerPanel() {
 
       {/* Content area */}
       <div className="flex-1 overflow-hidden flex flex-col">
-        {computerPanel.type === "idle" ? <IdleView /> : <TerminalView />}
+        {computerPanel.type === "browser" && computerPanel.screenshot ? (
+          <div className="flex-1 overflow-auto bg-black flex items-center justify-center">
+            <img
+              src={computerPanel.screenshot}
+              alt="沙箱截图"
+              className="max-w-full max-h-full object-contain"
+              style={{ imageRendering: "auto" }}
+            />
+          </div>
+        ) : computerPanel.type === "idle" ? (
+          <IdleView />
+        ) : (
+          <TerminalView />
+        )}
       </div>
 
       {/* Bottom status bar */}
