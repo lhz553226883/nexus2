@@ -335,17 +335,50 @@ def instrument_agent(agent: Manus, task_id: str):
             "tool_result": result[:1000] if result else "",
         })
 
-        # ── Screenshot: capture sandbox display after each tool execution ──
+        # ── Screenshot: push screenshot after each tool execution ──
+        # Priority 1: BrowserUseTool — actively call get_current_state to capture browser screenshot
+        # Priority 2: agent._current_base64_image (set by tools returning ToolResult.base64_image)
+        # Priority 3: Fallback to sandbox Xvfb screenshot (if Docker sandbox is running)
         try:
-            from app.sandbox.client import SANDBOX_CLIENT
-            screenshot_bytes = await SANDBOX_CLIENT.take_screenshot()
-            if screenshot_bytes:
-                screenshot_b64 = base64.b64encode(screenshot_bytes).decode("utf-8")
+            screenshot_b64: Optional[str] = None
+
+            if name == "browser_use":
+                # For browser tool: actively capture current page screenshot
+                try:
+                    browser_tool = agent.available_tools.tool_map.get("browser_use")
+                    if browser_tool and hasattr(browser_tool, "get_current_state"):
+                        state_result = await browser_tool.get_current_state()
+                        if state_result and hasattr(state_result, "base64_image") and state_result.base64_image:
+                            img_data = state_result.base64_image
+                            if img_data.startswith("data:"):
+                                screenshot_b64 = img_data
+                            else:
+                                screenshot_b64 = f"data:image/jpeg;base64,{img_data}"
+                except Exception:
+                    pass  # Browser screenshot failed, try other methods
+
+            # Check if the tool produced a screenshot via ToolResult.base64_image
+            if not screenshot_b64 and hasattr(agent, "_current_base64_image") and agent._current_base64_image:
+                img_data = agent._current_base64_image
+                if img_data.startswith("data:"):
+                    screenshot_b64 = img_data
+                else:
+                    screenshot_b64 = f"data:image/jpeg;base64,{img_data}"
+
+            # Fallback: try to capture sandbox display (requires Docker sandbox)
+            if not screenshot_b64:
+                from app.sandbox.client import SANDBOX_CLIENT
+                if SANDBOX_CLIENT.sandbox:
+                    screenshot_bytes = await SANDBOX_CLIENT.take_screenshot()
+                    if screenshot_bytes:
+                        screenshot_b64 = "data:image/png;base64," + base64.b64encode(screenshot_bytes).decode("utf-8")
+
+            if screenshot_b64:
                 push_event(task_id, {
                     "type": "screenshot",
                     "step": agent.current_step,
                     "tool_name": name,
-                    "image": f"data:image/png;base64,{screenshot_b64}",
+                    "image": screenshot_b64,
                 })
         except Exception:
             pass  # Screenshot is optional, never block execution
