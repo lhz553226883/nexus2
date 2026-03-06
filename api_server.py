@@ -196,6 +196,14 @@ from app.logger import logger
 # ─── App setup ───────────────────────────────────────────────────────────────
 app = FastAPI(title="Nexus API", version="2.0.0")
 
+# Configure screenshot debug logging to stdout
+import logging as _std_logging
+_std_logging.basicConfig(
+    level=_std_logging.DEBUG,
+    format='%(asctime)s %(name)s %(levelname)s %(message)s',
+)
+_std_logging.getLogger('nexus.screenshot').setLevel(_std_logging.DEBUG)
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -466,6 +474,8 @@ def instrument_agent(agent: Manus, task_id: str):
         # Priority 4: Render tool output as a code/terminal screenshot (always works, no Docker needed)
         try:
             screenshot_b64: Optional[str] = None
+            import logging as _logging
+            _logging.getLogger('nexus.screenshot').info(f'[SCREENSHOT] tool={name} starting screenshot capture')
 
             if name == "browser_use":
                 # For browser tool: actively capture current page screenshot
@@ -523,13 +533,18 @@ def instrument_agent(agent: Manus, task_id: str):
                     screenshot_b64 = render_tool_screenshot(display_content, name)
 
             if screenshot_b64:
+                _logging.getLogger('nexus.screenshot').info(f'[SCREENSHOT] tool={name} PUSHING screenshot ({len(screenshot_b64)} bytes)')
                 push_event(task_id, {
                     "type": "screenshot",
                     "step": agent.current_step,
                     "tool_name": name,
                     "image": screenshot_b64,
                 })
-        except Exception:
+            else:
+                _logging.getLogger('nexus.screenshot').warning(f'[SCREENSHOT] tool={name} NO screenshot generated')
+        except Exception as _ss_err:
+            import logging as _logging2
+            _logging2.getLogger('nexus.screenshot').error(f'[SCREENSHOT] tool={name} EXCEPTION: {_ss_err}')
             pass  # Screenshot is optional, never block execution
 
         return result
