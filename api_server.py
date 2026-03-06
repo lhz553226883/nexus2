@@ -18,6 +18,7 @@ Nexus API Server — 真正调用 OpenManus Agent 的后端服务
 
 import asyncio
 import base64
+import io
 import json
 import re
 import uuid
@@ -29,6 +30,129 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
+
+# ─── Screenshot Renderer ─────────────────────────────────────────────────────
+def render_tool_screenshot(content: str, tool_name: str = "terminal", max_lines: int = 50) -> str:
+    """
+    Render tool output as a terminal/editor-style screenshot.
+    Returns a base64-encoded PNG data URI.
+    Works without Docker sandbox — pure Python/Pillow.
+    """
+    try:
+        from PIL import Image, ImageDraw, ImageFont
+
+        # Dark theme colors
+        BG = (22, 27, 34)           # GitHub dark background
+        FG = (201, 209, 217)        # Default text
+        HEADER_BG = (33, 38, 45)    # Header bar
+        LINE_NUM_FG = (110, 118, 129)  # Line numbers
+        KEYWORD_FG = (121, 192, 255)   # Blue (keywords)
+        STRING_FG = (165, 214, 255)    # Light blue
+        COMMENT_FG = (110, 118, 129)   # Gray (comments)
+        SUCCESS_FG = (63, 185, 80)     # Green
+        ERROR_FG = (248, 81, 73)       # Red
+
+        lines = content.replace('\t', '    ').split('\n')[:max_lines]
+        if not lines:
+            lines = ['(empty)']
+
+        # Font setup — try multiple paths for cross-platform compatibility
+        FONT_SIZE = 13
+        FONT_CANDIDATES = [
+            '/usr/share/fonts/truetype/liberation/LiberationMono-Regular.ttf',
+            '/usr/share/fonts/truetype/liberation/LiberationMono-Bold.ttf',
+            '/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf',
+            '/usr/share/fonts/truetype/noto/NotoSansMono-Regular.ttf',
+        ]
+        FONT_BOLD_CANDIDATES = [
+            '/usr/share/fonts/truetype/liberation/LiberationMono-Bold.ttf',
+            '/usr/share/fonts/truetype/dejavu/DejaVuSansMono-Bold.ttf',
+            '/usr/share/fonts/truetype/noto/NotoSansMono-Bold.ttf',
+        ]
+        font = None
+        font_bold = None
+        for fp in FONT_CANDIDATES:
+            try:
+                font = ImageFont.truetype(fp, FONT_SIZE)
+                break
+            except Exception:
+                continue
+        for fp in FONT_BOLD_CANDIDATES:
+            try:
+                font_bold = ImageFont.truetype(fp, FONT_SIZE)
+                break
+            except Exception:
+                continue
+        if font is None:
+            font = ImageFont.load_default()
+        if font_bold is None:
+            font_bold = font
+
+        CHAR_W = 8
+        CHAR_H = 18
+        PADDING_X = 16
+        PADDING_Y = 12
+        HEADER_H = 38
+        LINE_NUM_W = 40
+
+        max_line_len = max((len(l) for l in lines), default=0)
+        width = max(700, max_line_len * CHAR_W + LINE_NUM_W + PADDING_X * 2 + 20)
+        width = min(width, 1400)  # cap at 1400px
+        height = HEADER_H + len(lines) * CHAR_H + PADDING_Y * 2
+
+        img = Image.new('RGB', (width, height), BG)
+        draw = ImageDraw.Draw(img)
+
+        # Header bar
+        draw.rectangle([0, 0, width, HEADER_H], fill=HEADER_BG)
+        # macOS-style traffic lights
+        for idx, color in enumerate([(255, 95, 87), (255, 189, 46), (40, 200, 64)]):
+            cx = 14 + idx * 20
+            cy = HEADER_H // 2
+            draw.ellipse([cx - 6, cy - 6, cx + 6, cy + 6], fill=color)
+        # Tool name in header
+        header_label = {
+            'str_replace_editor': '  Editor',
+            'python_execute': '  Python',
+            'browser_use': '  Browser',
+            'bash': '  Terminal',
+            'python': '  Python',
+        }.get(tool_name, f'  {tool_name}')
+        draw.text((70, HEADER_H // 2 - 7), header_label, font=font_bold, fill=FG)
+
+        # Separator line
+        draw.line([(0, HEADER_H), (width, HEADER_H)], fill=(48, 54, 61), width=1)
+
+        # Content lines
+        y = HEADER_H + PADDING_Y
+        for i, line in enumerate(lines):
+            line_num_str = f'{i + 1:3d}'
+            draw.text((PADDING_X, y), line_num_str, font=font, fill=LINE_NUM_FG)
+            # Separator between line numbers and code
+            draw.line([(PADDING_X + LINE_NUM_W - 6, y + 2), (PADDING_X + LINE_NUM_W - 6, y + CHAR_H - 2)],
+                      fill=(48, 54, 61), width=1)
+            # Truncate long lines
+            display_line = line[:int((width - LINE_NUM_W - PADDING_X * 2) / CHAR_W)]
+            # Color hint based on content
+            if line.startswith('#') or line.startswith('//'):
+                color = COMMENT_FG
+            elif any(kw in line for kw in ['Error', 'error', 'Exception', 'failed', 'FAILED']):
+                color = ERROR_FG
+            elif any(kw in line for kw in ['success', 'Success', 'created', 'Created', 'OK', 'done']):
+                color = SUCCESS_FG
+            else:
+                color = FG
+            draw.text((PADDING_X + LINE_NUM_W, y), display_line, font=font, fill=color)
+            y += CHAR_H
+
+        # Convert to base64
+        buf = io.BytesIO()
+        img.save(buf, format='PNG', optimize=True)
+        b64 = base64.b64encode(buf.getvalue()).decode('utf-8')
+        return f'data:image/png;base64,{b64}'
+    except Exception:
+        return ''
+
 
 # ─── SSE Event Queue Management ─────────────────────────────────────────────
 event_queues: Dict[str, asyncio.Queue] = {}
@@ -336,9 +460,10 @@ def instrument_agent(agent: Manus, task_id: str):
         })
 
         # ── Screenshot: push screenshot after each tool execution ──
-        # Priority 1: BrowserUseTool — actively call get_current_state to capture browser screenshot
+        # Priority 1: BrowserUseTool — actively call get_current_state to capture real browser screenshot
         # Priority 2: agent._current_base64_image (set by tools returning ToolResult.base64_image)
-        # Priority 3: Fallback to sandbox Xvfb screenshot (if Docker sandbox is running)
+        # Priority 3: Docker sandbox Xvfb screenshot (if sandbox is running)
+        # Priority 4: Render tool output as a code/terminal screenshot (always works, no Docker needed)
         try:
             screenshot_b64: Optional[str] = None
 
@@ -365,13 +490,37 @@ def instrument_agent(agent: Manus, task_id: str):
                 else:
                     screenshot_b64 = f"data:image/jpeg;base64,{img_data}"
 
-            # Fallback: try to capture sandbox display (requires Docker sandbox)
+            # Try Docker sandbox display screenshot
             if not screenshot_b64:
-                from app.sandbox.client import SANDBOX_CLIENT
-                if SANDBOX_CLIENT.sandbox:
-                    screenshot_bytes = await SANDBOX_CLIENT.take_screenshot()
-                    if screenshot_bytes:
-                        screenshot_b64 = "data:image/png;base64," + base64.b64encode(screenshot_bytes).decode("utf-8")
+                try:
+                    from app.sandbox.client import SANDBOX_CLIENT
+                    if SANDBOX_CLIENT.sandbox:
+                        screenshot_bytes = await SANDBOX_CLIENT.take_screenshot()
+                        if screenshot_bytes:
+                            screenshot_b64 = "data:image/png;base64," + base64.b64encode(screenshot_bytes).decode("utf-8")
+                except Exception:
+                    pass
+
+            # Final fallback: render tool args/result as a code screenshot (no Docker needed)
+            if not screenshot_b64:
+                # For str_replace_editor: show the file content being written
+                if name == "str_replace_editor":
+                    try:
+                        import json as _json
+                        args = _json.loads(args_str) if args_str else {}
+                        file_text = args.get("file_text") or args.get("new_str") or ""
+                        path = args.get("path", "")
+                        if file_text:
+                            display_content = f"# {path}\n" + file_text if path else file_text
+                        else:
+                            display_content = result or args_str
+                        screenshot_b64 = render_tool_screenshot(display_content, name, max_lines=60)
+                    except Exception:
+                        screenshot_b64 = render_tool_screenshot(result or args_str, name)
+                else:
+                    # For other tools: show the tool result
+                    display_content = result or f"[{name}] executed"
+                    screenshot_b64 = render_tool_screenshot(display_content, name)
 
             if screenshot_b64:
                 push_event(task_id, {
