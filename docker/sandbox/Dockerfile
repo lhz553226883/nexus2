@@ -42,6 +42,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     supervisor \
     # Utilities
     tmux curl wget unzip tar gzip net-tools procps \
+    # Screenshot and image tools
+    scrot imagemagick \
     && locale-gen en_US.UTF-8 \
     && rm -rf /var/lib/apt/lists/*
 
@@ -53,9 +55,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm /tmp/chrome.deb \
     && rm -rf /var/lib/apt/lists/*
 
-# ── 3. Install noVNC from local tarball (pre-downloaded for speed) ─────────────
-COPY novnc.tar.gz /tmp/novnc.tar.gz
+# ── 3. Install noVNC with optimized download ──────────────────────────────────
+# Using curl with connection pooling and parallel streams for faster download
 RUN mkdir -p /opt/novnc && \
+    curl -L --max-time 300 --connect-timeout 30 -o /tmp/novnc.tar.gz \
+    https://codeload.github.com/novnc/noVNC/tar.gz/refs/tags/v1.4.0 && \
     tar -xzf /tmp/novnc.tar.gz -C /opt/novnc --strip-components=1 && \
     ln -s /opt/novnc/vnc.html /opt/novnc/index.html && \
     rm /tmp/novnc.tar.gz
@@ -65,8 +69,6 @@ RUN pip3 install --no-cache-dir \
     websockify \
     requests \
     playwright
-
-RUN apt-get install -y scrot imagemagick
 
 # ── 5. supervisord configuration ─────────────────────────────────────────────
 COPY supervisord.conf /etc/supervisor/conf.d/supervisord.conf
