@@ -69,11 +69,21 @@ class DockerSandbox:
             # Generate unique container name with sandbox_ prefix
             container_name = f"sandbox_{uuid.uuid4().hex[:8]}"
 
+            # Detect if image has a startup script (nexus-sandbox:local uses /start.sh)
+            # For nexus-sandbox images, use the image's default CMD (supervisord + Xvfb)
+            # For plain Python images, use tail -f /dev/null to keep container alive
+            use_default_cmd = (
+                "nexus-sandbox" in self.config.image
+                or "whitezxj/sandbox" in self.config.image
+            )
+
             # Create container
             container = await asyncio.to_thread(
                 self.client.api.create_container,
                 image=self.config.image,
-                command="tail -f /dev/null",
+                # Use image's default CMD for nexus-sandbox (starts Xvfb + supervisord)
+                # Use tail -f /dev/null for plain images to keep them alive
+                command=None if use_default_cmd else "tail -f /dev/null",
                 hostname="sandbox",
                 working_dir=self.config.work_dir,
                 host_config=host_config,
@@ -87,12 +97,17 @@ class DockerSandbox:
             # Start container
             await asyncio.to_thread(self.container.start)
 
+            # For nexus-sandbox images: wait for supervisord + Xvfb to be ready
+            if use_default_cmd:
+                # Give supervisord time to start Xvfb and other services
+                await asyncio.sleep(3)
+
             # Initialize terminal
             self.terminal = AsyncDockerizedTerminal(
                 container["Id"],
                 self.config.work_dir,
-                env_vars={"PYTHONUNBUFFERED": "1"}
-                # Ensure Python output is not buffered
+                env_vars={"PYTHONUNBUFFERED": "1", "DISPLAY": ":99"}
+                # Ensure Python output is not buffered; set DISPLAY for Xvfb
             )
             await self.terminal.init()
 

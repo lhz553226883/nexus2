@@ -42,6 +42,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     supervisor \
     # Utilities
     tmux curl wget unzip tar gzip net-tools procps \
+    # Terminal emulator for visual display
+    xterm \
+    # Chinese font support
+    fonts-wqy-zenhei fonts-wqy-microhei \
     # Screenshot and image tools
     scrot imagemagick \
     && locale-gen en_US.UTF-8 \

@@ -226,6 +226,8 @@ from app.agent.manus import Manus
 from app.schema import AgentState, Message
 from app.llm import LLM
 from app.logger import logger
+from app.config import config as app_config
+from app.sandbox.client import SANDBOX_CLIENT
 
 # ─── App setup ───────────────────────────────────────────────────────────────
 app = FastAPI(title="Nexus API", version="2.0.0")
@@ -533,14 +535,92 @@ def instrument_agent(agent: Manus, task_id: str):
                 else:
                     screenshot_b64 = f"data:image/jpeg;base64,{img_data}"
 
-            # Try Docker sandbox display screenshot
-            if not screenshot_b64:
+            # Try Docker sandbox display screenshot (Xvfb real screenshot)
+            # When sandbox is running, display tool execution in xterm terminal for visual feedback
+            if SANDBOX_CLIENT.sandbox:
                 try:
-                    from app.sandbox.client import SANDBOX_CLIENT
-                    if SANDBOX_CLIENT.sandbox:
-                        screenshot_bytes = await SANDBOX_CLIENT.take_screenshot()
-                        if screenshot_bytes:
-                            screenshot_b64 = "data:image/png;base64," + base64.b64encode(screenshot_bytes).decode("utf-8")
+                    import json as _json
+                    # Build a display script that shows tool activity in xterm
+                    display_lines = [f"ubuntu@nexus:~$ # Task Step {agent.current_step}: {name}"]
+
+                    if name == "python_execute":
+                        try:
+                            args = _json.loads(args_str) if args_str else {}
+                            code = args.get("code", "")
+                            if code:
+                                # Write code to temp file and run it
+                                code_lines = code.split("\n")[:30]
+                                display_lines.append(f"ubuntu@nexus:~$ python3 /tmp/_nexus_task.py")
+                                # Write code to sandbox and execute
+                                await SANDBOX_CLIENT.write_file("/tmp/_nexus_task.py", code)
+                                try:
+                                    run_output = await SANDBOX_CLIENT.run_command(
+                                        "DISPLAY=:99 python3 /tmp/_nexus_task.py 2>&1 | head -30",
+                                        timeout=15
+                                    )
+                                    display_lines.extend(run_output.split("\n")[:20])
+                                except Exception:
+                                    pass
+                        except Exception:
+                            pass
+
+                    elif name == "str_replace_editor":
+                        try:
+                            args = _json.loads(args_str) if args_str else {}
+                            cmd_type = args.get("command", "view")
+                            path = args.get("path", "")
+                            file_text = args.get("file_text", "")
+                            if cmd_type == "create" and file_text and path:
+                                await SANDBOX_CLIENT.write_file(path, file_text)
+                                display_lines.append(f"ubuntu@nexus:~$ cat {path}")
+                                display_lines.extend(file_text.split("\n")[:25])
+                            elif cmd_type == "view" and path:
+                                display_lines.append(f"ubuntu@nexus:~$ cat {path}")
+                                try:
+                                    content = await SANDBOX_CLIENT.read_file(path)
+                                    display_lines.extend(content.split("\n")[:25])
+                                except Exception:
+                                    pass
+                        except Exception:
+                            pass
+
+                    elif name in ("bash", "terminal"):
+                        try:
+                            args = _json.loads(args_str) if args_str else {}
+                            cmd = args.get("command", args.get("cmd", ""))
+                            if cmd:
+                                display_lines.append(f"ubuntu@nexus:~$ {cmd[:100]}")
+                                try:
+                                    run_output = await SANDBOX_CLIENT.run_command(cmd[:500], timeout=10)
+                                    display_lines.extend(run_output.split("\n")[:20])
+                                except Exception:
+                                    pass
+                        except Exception:
+                            pass
+
+                    # Write display content to a file in sandbox, then show in xterm
+                    display_text = "\n".join(display_lines[:35])
+                    try:
+                        await SANDBOX_CLIENT.write_file("/tmp/_nexus_display.txt", display_text)
+                        # Kill previous xterm and open new one showing the content
+                        xterm_cmd = (
+                            "DISPLAY=:99 pkill -f '_nexus_display' 2>/dev/null; "
+                            "DISPLAY=:99 xterm "
+                            "-fa 'Monospace' -fs 11 "
+                            "-bg '#1a1a2e' -fg '#00ff41' "
+                            "-geometry 120x35+0+0 "
+                            "-title 'Nexus Terminal' "
+                            "-e 'bash -c \"cat /tmp/_nexus_display.txt; echo; echo \\\"\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\\\"; sleep 5\"' &"
+                        )
+                        await SANDBOX_CLIENT.run_command(xterm_cmd, timeout=3)
+                        await asyncio.sleep(0.8)  # Wait for xterm to render
+                    except Exception:
+                        pass
+
+                    # Now take the real Xvfb screenshot
+                    screenshot_bytes = await SANDBOX_CLIENT.take_screenshot()
+                    if screenshot_bytes:
+                        screenshot_b64 = "data:image/png;base64," + base64.b64encode(screenshot_bytes).decode("utf-8")
                 except Exception:
                     pass
 
@@ -604,6 +684,30 @@ async def run_agent_and_stream(task_id: str, prompt: str) -> AsyncGenerator[str,
         nonlocal agent
         try:
             _active_task_id = task_id
+
+            # ── Start local Docker sandbox if configured ─────────────────────────────────
+            sandbox_started = False
+            if app_config.sandbox and app_config.sandbox.use_sandbox:
+                try:
+                    push_event(task_id, {
+                        "type": "log",
+                        "content": f"🐳 启动沙盒容器 ({app_config.sandbox.image})...",
+                        "level": "info",
+                    })
+                    await SANDBOX_CLIENT.create(app_config.sandbox)
+                    sandbox_started = True
+                    push_event(task_id, {
+                        "type": "log",
+                        "content": "✅ 沙盒容器已就绪，Xvfb 虚拟显示器已启动",
+                        "level": "info",
+                    })
+                except Exception as _sb_err:
+                    push_event(task_id, {
+                        "type": "log",
+                        "content": f"⚠️ 沙盒容器启动失败: {_sb_err}，将使用本地模式继续",
+                        "level": "warning",
+                    })
+
             agent = await Manus.create()
             _active_agents[task_id] = agent
             instrument_agent(agent, task_id)
@@ -666,6 +770,12 @@ async def run_agent_and_stream(task_id: str, prompt: str) -> AsyncGenerator[str,
             if agent:
                 try:
                     await agent.cleanup()
+                except Exception:
+                    pass
+            # Cleanup Docker sandbox if it was started
+            if SANDBOX_CLIENT.sandbox:
+                try:
+                    await SANDBOX_CLIENT.cleanup()
                 except Exception:
                     pass
             await q.put(None)  # sentinel
