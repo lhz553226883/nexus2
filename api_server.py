@@ -327,12 +327,20 @@ def instrument_agent(agent: Manus, task_id: str):
         if task.get("status") == "stopped":
             return result
 
-        push_event(task_id, {
+        # After execute_tool returns, agent._current_base64_image may have been
+        # set by toolcall.py if the tool produced a screenshot (e.g. browser tools).
+        screenshot = getattr(agent, "_current_base64_image", None)
+
+        tool_end_event = {
             "type": "tool_end",
             "step": agent.current_step,
             "tool_name": name,
             "tool_result": result[:1000] if result else "",
-        })
+        }
+        if screenshot:
+            tool_end_event["screenshot"] = screenshot
+
+        push_event(task_id, tool_end_event)
 
         return result
 

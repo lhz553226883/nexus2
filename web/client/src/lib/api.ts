@@ -40,6 +40,7 @@ export interface SSEEvent {
   tool_name?: string;
   tool_args?: string;
   tool_result?: string;
+  screenshot?: string; // base64-encoded screenshot from browser/vision tools
 
   // message
   content?: string;

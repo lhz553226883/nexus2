@@ -73,6 +73,31 @@ function TerminalView() {
   );
 }
 
+function BrowserView() {
+  const { computerPanel } = useAgent();
+  const screenshot = computerPanel.screenshot;
+
+  if (!screenshot) {
+    return (
+      <div className="flex-1 flex flex-col items-center justify-center gap-3 opacity-40">
+        <Globe size={28} className="text-gray-500" />
+        <p className="text-xs text-gray-500 font-mono">等待浏览器截图...</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex-1 overflow-auto">
+      <img
+        src={`data:image/jpeg;base64,${screenshot}`}
+        alt="Browser screenshot"
+        className="w-full h-auto block"
+        style={{ imageRendering: "auto" }}
+      />
+    </div>
+  );
+}
+
 function IdleView() {
   return (
     <div className="flex-1 flex flex-col items-center justify-center gap-4 opacity-30">
@@ -148,7 +173,13 @@ export default function ComputerPanel() {
 
       {/* Content area */}
       <div className="flex-1 overflow-hidden flex flex-col">
-        {computerPanel.type === "idle" ? <IdleView /> : <TerminalView />}
+        {computerPanel.type === "idle" ? (
+          <IdleView />
+        ) : computerPanel.type === "browser" ? (
+          <BrowserView />
+        ) : (
+          <TerminalView />
+        )}
       </div>
 
       {/* Bottom status bar */}

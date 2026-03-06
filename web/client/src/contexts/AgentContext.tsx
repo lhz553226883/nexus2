@@ -391,9 +391,11 @@ export function AgentProvider({ children }: { children: React.ReactNode }) {
               }));
               setComputerPanel((prev) => ({
                 ...prev,
-                type: "terminal",
+                type: mapToolType(event.tool_name || "") === "browser" ? "browser" : "terminal",
                 title: `Nexus is using ${event.tool_name || "Tool"}`,
                 subtitle: (event.tool_args || "").slice(0, 80),
+                // Clear screenshot when a new tool starts (will be updated on tool_end)
+                screenshot: mapToolType(event.tool_name || "") === "browser" ? prev.screenshot : undefined,
               }));
               addTerminalLine(
                 `🔧 ${event.tool_name}: ${(event.tool_args || "").slice(0, 100)}`,
@@ -430,6 +432,15 @@ export function AgentProvider({ children }: { children: React.ReactNode }) {
                   event.tool_result.slice(0, 200),
                   "output",
                 );
+              }
+              // If the tool returned a screenshot, update the computer panel to show it
+              if (event.screenshot) {
+                setComputerPanel((prev) => ({
+                  ...prev,
+                  type: "browser",
+                  screenshot: event.screenshot,
+                  subtitle: event.tool_name || prev.subtitle,
+                }));
               }
             }
           }
