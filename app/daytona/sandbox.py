@@ -102,6 +102,31 @@ def start_supervisord_session(sandbox: Sandbox):
         raise e
 
 
+def fix_vnc_xdamage(sandbox: Sandbox, password: str):
+    """Restart x11vnc with -noxdamage to eliminate periodic black screen flicker."""
+    session_id = "vnc-fix-session"
+    try:
+        logger.info("Fixing x11vnc: restarting with -noxdamage to eliminate black screen flicker")
+        sandbox.process.create_session(session_id)
+        # Kill existing x11vnc process and restart with -noxdamage
+        fix_cmd = (
+            "pkill -f x11vnc; sleep 2; "
+            f"x11vnc -display :99 -forever -shared -noxdamage "
+            f"-rfbauth /root/.vnc/passwd -rfbport 5900 -bg -o /var/log/x11vnc.log"
+        )
+        sandbox.process.execute_session_command(
+            session_id,
+            SessionExecuteRequest(
+                command=fix_cmd,
+                var_async=True,
+            ),
+        )
+        time.sleep(3)
+        logger.info("x11vnc restarted with -noxdamage successfully")
+    except Exception as e:
+        logger.warning(f"Could not fix x11vnc xdamage (non-fatal): {str(e)}")
+
+
 def _generate_password(length: int = 12) -> str:
     """Generate a random secure password."""
     alphabet = string.ascii_letters + string.digits
@@ -159,6 +184,9 @@ def create_sandbox(password: str = None, project_id: str = None):
 
     # Start supervisord in a session for new sandbox
     start_supervisord_session(sandbox)
+
+    # Fix x11vnc xdamage issue that causes periodic black screen flicker
+    fix_vnc_xdamage(sandbox, password)
 
     logger.info(f"Sandbox environment successfully initialized")
     return sandbox
