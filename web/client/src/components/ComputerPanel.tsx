@@ -148,7 +148,8 @@ export default function ComputerPanel() {
 
       {/* Content area */}
       <div className="flex-1 overflow-hidden flex flex-col">
-        {computerPanel.type === "browser" && computerPanel.screenshot ? (
+        {computerPanel.screenshot ? (
+          // Show screenshot whenever one is available (any tool type)
           <div className="flex-1 overflow-auto bg-black flex items-center justify-center">
             <img
               src={computerPanel.screenshot}

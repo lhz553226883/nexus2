@@ -66,7 +66,7 @@ export interface TerminalLine {
 }
 
 export interface ComputerPanelState {
-  type: "idle" | "terminal" | "browser";
+  type: "idle" | "terminal" | "browser" | "file";
   title: string;
   subtitle?: string;
   url?: string;

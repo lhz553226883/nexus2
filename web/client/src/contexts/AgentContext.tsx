@@ -389,11 +389,18 @@ export function AgentProvider({ children }: { children: React.ReactNode }) {
                     : s,
                 ),
               }));
+              const panelType = mapToolType(event.tool_name || "") === "browser"
+                ? "browser"
+                : mapToolType(event.tool_name || "") === "file"
+                  ? "file"
+                  : "terminal";
               setComputerPanel((prev) => ({
                 ...prev,
-                type: "terminal",
+                type: panelType as "terminal" | "browser" | "file",
                 title: `Nexus is using ${event.tool_name || "Tool"}`,
                 subtitle: (event.tool_args || "").slice(0, 80),
+                // Clear previous screenshot so terminal view shows while tool runs
+                screenshot: undefined,
               }));
               addTerminalLine(
                 `🔧 ${event.tool_name}: ${(event.tool_args || "").slice(0, 100)}`,
@@ -459,9 +466,10 @@ export function AgentProvider({ children }: { children: React.ReactNode }) {
           else if (event.type === "screenshot" && event.image) {
             setComputerPanel((prev) => ({
               ...prev,
-              type: "browser" as const,
+              // Keep the current panel type (terminal/file/browser) so the
+              // tool status bar stays correct; screenshot is shown regardless
               screenshot: event.image,
-              title: event.tool_name ? `截图 · ${event.tool_name}` : "沙箱截图",
+              subtitle: event.tool_name ? `Task completed` : prev.subtitle,
             }));
           }
 

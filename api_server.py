@@ -37,17 +37,16 @@ def render_tool_screenshot(content: str, tool_name: str = "terminal", max_lines:
     Render tool output as a terminal/editor-style screenshot.
     Returns a base64-encoded PNG data URI.
     Works without Docker sandbox — pure Python/Pillow.
+    Supports dual-font rendering: ASCII via LiberationMono, CJK via DroidSansFallback.
     """
     try:
         from PIL import Image, ImageDraw, ImageFont
 
         # Dark theme colors
-        BG = (22, 27, 34)           # GitHub dark background
-        FG = (201, 209, 217)        # Default text
-        HEADER_BG = (33, 38, 45)    # Header bar
+        BG = (22, 27, 34)              # GitHub dark background
+        FG = (201, 209, 217)           # Default text
+        HEADER_BG = (33, 38, 45)       # Header bar
         LINE_NUM_FG = (110, 118, 129)  # Line numbers
-        KEYWORD_FG = (121, 192, 255)   # Blue (keywords)
-        STRING_FG = (165, 214, 255)    # Light blue
         COMMENT_FG = (110, 118, 129)   # Gray (comments)
         SUCCESS_FG = (63, 185, 80)     # Green
         ERROR_FG = (248, 81, 73)       # Red
@@ -56,37 +55,72 @@ def render_tool_screenshot(content: str, tool_name: str = "terminal", max_lines:
         if not lines:
             lines = ['(empty)']
 
-        # Font setup — try multiple paths for cross-platform compatibility
+        # ── Dual-font setup ──────────────────────────────────────────────────
+        # font_ascii: monospace for code/ASCII (LiberationMono)
+        # font_cjk:   CJK fallback for Chinese/Japanese/Korean (DroidSansFallback)
         FONT_SIZE = 13
-        FONT_CANDIDATES = [
+        _ASCII_CANDIDATES = [
             '/usr/share/fonts/truetype/liberation/LiberationMono-Regular.ttf',
-            '/usr/share/fonts/truetype/liberation/LiberationMono-Bold.ttf',
             '/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf',
             '/usr/share/fonts/truetype/noto/NotoSansMono-Regular.ttf',
         ]
-        FONT_BOLD_CANDIDATES = [
+        _ASCII_BOLD_CANDIDATES = [
             '/usr/share/fonts/truetype/liberation/LiberationMono-Bold.ttf',
             '/usr/share/fonts/truetype/dejavu/DejaVuSansMono-Bold.ttf',
-            '/usr/share/fonts/truetype/noto/NotoSansMono-Bold.ttf',
         ]
-        font = None
-        font_bold = None
-        for fp in FONT_CANDIDATES:
+        _CJK_CANDIDATES = [
+            '/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf',
+            '/usr/share/fonts/truetype/droid/DroidSansFallback.ttf',
+        ]
+        font_ascii = None
+        font_ascii_bold = None
+        font_cjk = None
+        for fp in _ASCII_CANDIDATES:
             try:
-                font = ImageFont.truetype(fp, FONT_SIZE)
+                font_ascii = ImageFont.truetype(fp, FONT_SIZE)
                 break
             except Exception:
                 continue
-        for fp in FONT_BOLD_CANDIDATES:
+        for fp in _ASCII_BOLD_CANDIDATES:
             try:
-                font_bold = ImageFont.truetype(fp, FONT_SIZE)
+                font_ascii_bold = ImageFont.truetype(fp, FONT_SIZE)
                 break
             except Exception:
                 continue
-        if font is None:
-            font = ImageFont.load_default()
-        if font_bold is None:
-            font_bold = font
+        for fp in _CJK_CANDIDATES:
+            try:
+                font_cjk = ImageFont.truetype(fp, FONT_SIZE)
+                break
+            except Exception:
+                continue
+        if font_ascii is None:
+            font_ascii = ImageFont.load_default()
+        if font_ascii_bold is None:
+            font_ascii_bold = font_ascii
+        # If no CJK font, fall back to ascii font (CJK chars may show as boxes)
+        if font_cjk is None:
+            font_cjk = font_ascii
+
+        def draw_mixed_text(draw_obj, pos, text, font_a, font_c, fill):
+            """Draw text with dual-font support: ASCII uses font_a, CJK uses font_c."""
+            x, y = pos
+            for ch in text:
+                cp = ord(ch)
+                # CJK Unified Ideographs and common CJK ranges
+                is_cjk = (
+                    0x4E00 <= cp <= 0x9FFF or   # CJK Unified Ideographs
+                    0x3000 <= cp <= 0x303F or   # CJK Symbols and Punctuation
+                    0xFF00 <= cp <= 0xFFEF or   # Halfwidth/Fullwidth Forms
+                    0x3040 <= cp <= 0x309F or   # Hiragana
+                    0x30A0 <= cp <= 0x30FF or   # Katakana
+                    0xAC00 <= cp <= 0xD7AF      # Hangul
+                )
+                use_font = font_c if is_cjk else font_a
+                draw_obj.text((x, y), ch, font=use_font, fill=fill)
+                # Advance: CJK chars are typically double-width
+                char_advance = 14 if is_cjk else 8
+                x += char_advance
+            return x  # return final x position
 
         CHAR_W = 8
         CHAR_H = 18
@@ -118,7 +152,7 @@ def render_tool_screenshot(content: str, tool_name: str = "terminal", max_lines:
             'bash': '  Terminal',
             'python': '  Python',
         }.get(tool_name, f'  {tool_name}')
-        draw.text((70, HEADER_H // 2 - 7), header_label, font=font_bold, fill=FG)
+        draw_mixed_text(draw, (70, HEADER_H // 2 - 7), header_label, font_ascii_bold, font_cjk, FG)
 
         # Separator line
         draw.line([(0, HEADER_H), (width, HEADER_H)], fill=(48, 54, 61), width=1)
@@ -127,22 +161,22 @@ def render_tool_screenshot(content: str, tool_name: str = "terminal", max_lines:
         y = HEADER_H + PADDING_Y
         for i, line in enumerate(lines):
             line_num_str = f'{i + 1:3d}'
-            draw.text((PADDING_X, y), line_num_str, font=font, fill=LINE_NUM_FG)
+            draw.text((PADDING_X, y), line_num_str, font=font_ascii, fill=LINE_NUM_FG)
             # Separator between line numbers and code
             draw.line([(PADDING_X + LINE_NUM_W - 6, y + 2), (PADDING_X + LINE_NUM_W - 6, y + CHAR_H - 2)],
                       fill=(48, 54, 61), width=1)
-            # Truncate long lines
+            # Truncate long lines (rough estimate)
             display_line = line[:int((width - LINE_NUM_W - PADDING_X * 2) / CHAR_W)]
             # Color hint based on content
             if line.startswith('#') or line.startswith('//'):
-                color = COMMENT_FG
+                line_color = COMMENT_FG
             elif any(kw in line for kw in ['Error', 'error', 'Exception', 'failed', 'FAILED']):
-                color = ERROR_FG
-            elif any(kw in line for kw in ['success', 'Success', 'created', 'Created', 'OK', 'done']):
-                color = SUCCESS_FG
+                line_color = ERROR_FG
+            elif any(kw in line for kw in ['success', 'Success', 'created', 'Created', 'OK', 'done', '成功', '完成']):
+                line_color = SUCCESS_FG
             else:
-                color = FG
-            draw.text((PADDING_X + LINE_NUM_W, y), display_line, font=font, fill=color)
+                line_color = FG
+            draw_mixed_text(draw, (PADDING_X + LINE_NUM_W, y), display_line, font_ascii, font_cjk, line_color)
             y += CHAR_H
 
         # Convert to base64
@@ -414,95 +448,21 @@ def instrument_agent(agent: Manus, task_id: str):
             agent.state = AgentState.FINISHED
             return ""
         step_num = agent.current_step
-        # Snapshot tool_calls BEFORE act() so we know what tools will run
         pending_tools = list(agent.tool_calls) if agent.tool_calls else []
         push_event(task_id, {
             "type": "act_start",
             "step": step_num,
             "tool_count": len(pending_tools),
         })
-        # Push tool_start events for each pending tool
-        for cmd in pending_tools:
-            tname = cmd.function.name if cmd and cmd.function else "unknown"
-            targs = cmd.function.arguments if cmd and cmd.function else "{}"
-            push_event(task_id, {
-                "type": "tool_start",
-                "step": step_num,
-                "tool_name": tname,
-                "tool_args": targs[:500],
-            })
+        # NOTE: tool_start / tool_end / screenshot are all handled by
+        # patched_execute_tool below (which is called inside original_act).
+        # Do NOT push them here to avoid duplicate events.
         result = await original_act()
         # Check again after act (tools may have taken a while)
         task = tasks_store.get(task_id, {})
         if task.get("status") == "stopped":
             agent.state = AgentState.FINISHED
             return result
-        # Push tool_end + screenshot for each tool that ran
-        import logging as _log
-        _log.basicConfig(level=_log.DEBUG)
-        _log.getLogger('nexus.screenshot').setLevel(_log.DEBUG)
-        results_list = result.split("\n\n") if result else []
-        for idx, cmd in enumerate(pending_tools):
-            tname = cmd.function.name if cmd and cmd.function else "unknown"
-            targs = cmd.function.arguments if cmd and cmd.function else "{}"
-            tool_result_str = results_list[idx] if idx < len(results_list) else result or ""
-            push_event(task_id, {
-                "type": "tool_end",
-                "step": step_num,
-                "tool_name": tname,
-                "tool_result": tool_result_str[:1000],
-            })
-            # ── Screenshot ──────────────────────────────────────────────────
-            try:
-                screenshot_b64: Optional[str] = None
-                _log.getLogger('nexus.screenshot').info(f'[SCREENSHOT] act-level tool={tname}')
-                if tname == "browser_use":
-                    try:
-                        browser_tool = agent.available_tools.tool_map.get("browser_use")
-                        if browser_tool and hasattr(browser_tool, "get_current_state"):
-                            state_result = await browser_tool.get_current_state()
-                            if state_result and hasattr(state_result, "base64_image") and state_result.base64_image:
-                                img_data = state_result.base64_image
-                                screenshot_b64 = img_data if img_data.startswith("data:") else f"data:image/jpeg;base64,{img_data}"
-                    except Exception:
-                        pass
-                if not screenshot_b64 and hasattr(agent, "_current_base64_image") and agent._current_base64_image:
-                    img_data = agent._current_base64_image
-                    screenshot_b64 = img_data if img_data.startswith("data:") else f"data:image/jpeg;base64,{img_data}"
-                if not screenshot_b64:
-                    try:
-                        from app.sandbox.client import SANDBOX_CLIENT
-                        if SANDBOX_CLIENT.sandbox:
-                            screenshot_bytes = await SANDBOX_CLIENT.take_screenshot()
-                            if screenshot_bytes:
-                                screenshot_b64 = "data:image/png;base64," + base64.b64encode(screenshot_bytes).decode()
-                    except Exception:
-                        pass
-                if not screenshot_b64:
-                    if tname == "str_replace_editor":
-                        try:
-                            import json as _json
-                            args = _json.loads(targs) if targs else {}
-                            file_text = args.get("file_text") or args.get("new_str") or ""
-                            path = args.get("path", "")
-                            display_content = (f"# {path}\n" + file_text) if (file_text and path) else (file_text or tool_result_str)
-                        except Exception:
-                            display_content = tool_result_str
-                        screenshot_b64 = render_tool_screenshot(display_content, tname, max_lines=60)
-                    else:
-                        screenshot_b64 = render_tool_screenshot(tool_result_str or f"[{tname}] executed", tname)
-                if screenshot_b64:
-                    _log.getLogger('nexus.screenshot').info(f'[SCREENSHOT] PUSHING for tool={tname} size={len(screenshot_b64)}')
-                    push_event(task_id, {
-                        "type": "screenshot",
-                        "step": step_num,
-                        "tool_name": tname,
-                        "image": screenshot_b64,
-                    })
-                else:
-                    _log.getLogger('nexus.screenshot').warning(f'[SCREENSHOT] NO screenshot for tool={tname}')
-            except Exception as _ss_err:
-                _log.getLogger('nexus.screenshot').error(f'[SCREENSHOT] EXCEPTION tool={tname}: {_ss_err}')
         push_event(task_id, {
             "type": "step_end",
             "step": step_num,
