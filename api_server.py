@@ -413,28 +413,101 @@ def instrument_agent(agent: Manus, task_id: str):
         if task.get("status") == "stopped":
             agent.state = AgentState.FINISHED
             return ""
-
         step_num = agent.current_step
+        # Snapshot tool_calls BEFORE act() so we know what tools will run
+        pending_tools = list(agent.tool_calls) if agent.tool_calls else []
         push_event(task_id, {
             "type": "act_start",
             "step": step_num,
-            "tool_count": len(agent.tool_calls) if agent.tool_calls else 0,
+            "tool_count": len(pending_tools),
         })
-
+        # Push tool_start events for each pending tool
+        for cmd in pending_tools:
+            tname = cmd.function.name if cmd and cmd.function else "unknown"
+            targs = cmd.function.arguments if cmd and cmd.function else "{}"
+            push_event(task_id, {
+                "type": "tool_start",
+                "step": step_num,
+                "tool_name": tname,
+                "tool_args": targs[:500],
+            })
         result = await original_act()
-
         # Check again after act (tools may have taken a while)
         task = tasks_store.get(task_id, {})
         if task.get("status") == "stopped":
             agent.state = AgentState.FINISHED
             return result
-
+        # Push tool_end + screenshot for each tool that ran
+        import logging as _log
+        _log.basicConfig(level=_log.DEBUG)
+        _log.getLogger('nexus.screenshot').setLevel(_log.DEBUG)
+        results_list = result.split("\n\n") if result else []
+        for idx, cmd in enumerate(pending_tools):
+            tname = cmd.function.name if cmd and cmd.function else "unknown"
+            targs = cmd.function.arguments if cmd and cmd.function else "{}"
+            tool_result_str = results_list[idx] if idx < len(results_list) else result or ""
+            push_event(task_id, {
+                "type": "tool_end",
+                "step": step_num,
+                "tool_name": tname,
+                "tool_result": tool_result_str[:1000],
+            })
+            # ── Screenshot ──────────────────────────────────────────────────
+            try:
+                screenshot_b64: Optional[str] = None
+                _log.getLogger('nexus.screenshot').info(f'[SCREENSHOT] act-level tool={tname}')
+                if tname == "browser_use":
+                    try:
+                        browser_tool = agent.available_tools.tool_map.get("browser_use")
+                        if browser_tool and hasattr(browser_tool, "get_current_state"):
+                            state_result = await browser_tool.get_current_state()
+                            if state_result and hasattr(state_result, "base64_image") and state_result.base64_image:
+                                img_data = state_result.base64_image
+                                screenshot_b64 = img_data if img_data.startswith("data:") else f"data:image/jpeg;base64,{img_data}"
+                    except Exception:
+                        pass
+                if not screenshot_b64 and hasattr(agent, "_current_base64_image") and agent._current_base64_image:
+                    img_data = agent._current_base64_image
+                    screenshot_b64 = img_data if img_data.startswith("data:") else f"data:image/jpeg;base64,{img_data}"
+                if not screenshot_b64:
+                    try:
+                        from app.sandbox.client import SANDBOX_CLIENT
+                        if SANDBOX_CLIENT.sandbox:
+                            screenshot_bytes = await SANDBOX_CLIENT.take_screenshot()
+                            if screenshot_bytes:
+                                screenshot_b64 = "data:image/png;base64," + base64.b64encode(screenshot_bytes).decode()
+                    except Exception:
+                        pass
+                if not screenshot_b64:
+                    if tname == "str_replace_editor":
+                        try:
+                            import json as _json
+                            args = _json.loads(targs) if targs else {}
+                            file_text = args.get("file_text") or args.get("new_str") or ""
+                            path = args.get("path", "")
+                            display_content = (f"# {path}\n" + file_text) if (file_text and path) else (file_text or tool_result_str)
+                        except Exception:
+                            display_content = tool_result_str
+                        screenshot_b64 = render_tool_screenshot(display_content, tname, max_lines=60)
+                    else:
+                        screenshot_b64 = render_tool_screenshot(tool_result_str or f"[{tname}] executed", tname)
+                if screenshot_b64:
+                    _log.getLogger('nexus.screenshot').info(f'[SCREENSHOT] PUSHING for tool={tname} size={len(screenshot_b64)}')
+                    push_event(task_id, {
+                        "type": "screenshot",
+                        "step": step_num,
+                        "tool_name": tname,
+                        "image": screenshot_b64,
+                    })
+                else:
+                    _log.getLogger('nexus.screenshot').warning(f'[SCREENSHOT] NO screenshot for tool={tname}')
+            except Exception as _ss_err:
+                _log.getLogger('nexus.screenshot').error(f'[SCREENSHOT] EXCEPTION tool={tname}: {_ss_err}')
         push_event(task_id, {
             "type": "step_end",
             "step": step_num,
             "result_preview": result[:500] if result else "",
         })
-
         return result
 
     async def patched_execute_tool(command) -> str:
