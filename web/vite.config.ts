@@ -185,13 +185,18 @@ export default defineConfig({
       deny: ["**/.*"],
     },
     proxy: {
-      // Proxy /api and /health to OpenManus backend (default port 8765)
+      // Proxy /api, /health and /debug to OpenManus backend (default port 8765)
       "/api": {
         target: process.env.VITE_BACKEND_URL || "http://localhost:8765",
         changeOrigin: true,
         secure: false,
       },
       "/health": {
+        target: process.env.VITE_BACKEND_URL || "http://localhost:8765",
+        changeOrigin: true,
+        secure: false,
+      },
+      "/debug": {
         target: process.env.VITE_BACKEND_URL || "http://localhost:8765",
         changeOrigin: true,
         secure: false,

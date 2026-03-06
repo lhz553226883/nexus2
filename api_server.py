@@ -184,8 +184,80 @@ def render_tool_screenshot(content: str, tool_name: str = "terminal", max_lines:
         img.save(buf, format='PNG', optimize=True)
         b64 = base64.b64encode(buf.getvalue()).decode('utf-8')
         return f'data:image/png;base64,{b64}'
-    except Exception:
-        return ''
+    except Exception as _render_err:
+        import traceback as _tb
+        print(f'[SCREENSHOT-RENDER] PIL failed: {_render_err}, trying SVG fallback', flush=True)
+        _tb.print_exc()
+        # SVG fallback: generate a simple terminal-style SVG screenshot
+        try:
+            return _render_svg_screenshot(content, tool_name, max_lines)
+        except Exception as _svg_err:
+            print(f'[SCREENSHOT-RENDER] SVG fallback also failed: {_svg_err}', flush=True)
+            return ''
+
+
+def _render_svg_screenshot(content: str, tool_name: str = "terminal", max_lines: int = 50) -> str:
+    """
+    Render tool output as an SVG terminal screenshot.
+    No external dependencies — pure Python string formatting.
+    Returns a base64-encoded SVG data URI.
+    """
+    import html as _html
+    lines = content.replace('\t', '    ').split('\n')[:max_lines]
+    if not lines:
+        lines = ['(empty)']
+
+    CHAR_H = 18
+    PADDING_X = 16
+    PADDING_Y = 12
+    HEADER_H = 38
+    LINE_NUM_W = 45
+
+    max_line_len = max((len(l) for l in lines), default=0)
+    width = max(700, max_line_len * 7 + LINE_NUM_W + PADDING_X * 2 + 20)
+    width = min(width, 1400)
+    height = HEADER_H + len(lines) * CHAR_H + PADDING_Y * 2
+
+    header_label = {
+        'str_replace_editor': 'Editor',
+        'python_execute': 'Python',
+        'browser_use': 'Browser',
+        'bash': 'Terminal',
+        'python': 'Python',
+    }.get(tool_name, tool_name)
+
+    lines_svg = []
+    for i, line in enumerate(lines):
+        y = HEADER_H + PADDING_Y + i * CHAR_H + 13
+        # Line number
+        lines_svg.append(f'<text x="{PADDING_X}" y="{y}" fill="#6e7681" font-size="12">{i+1:3d}</text>')
+        # Separator
+        lines_svg.append(f'<line x1="{PADDING_X + LINE_NUM_W - 6}" y1="{y-12}" x2="{PADDING_X + LINE_NUM_W - 6}" y2="{y+4}" stroke="#30363d" stroke-width="1"/>')
+        # Content
+        escaped = _html.escape(line[:int((width - LINE_NUM_W - PADDING_X * 2) / 7)])
+        if line.startswith('#') or line.startswith('//'):
+            color = '#6e7681'
+        elif any(kw in line for kw in ['Error', 'error', 'Exception', 'failed']):
+            color = '#f85149'
+        elif any(kw in line for kw in ['success', 'Success', 'OK', 'done', '\u6210\u529f', '\u5b8c\u6210']):
+            color = '#3fb950'
+        else:
+            color = '#c9d1d9'
+        lines_svg.append(f'<text x="{PADDING_X + LINE_NUM_W}" y="{y}" fill="{color}" font-size="12" font-family="monospace">{escaped}</text>')
+
+    svg = f'''<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}">
+  <rect width="{width}" height="{height}" fill="#161b22"/>
+  <rect width="{width}" height="{HEADER_H}" fill="#21262d"/>
+  <circle cx="14" cy="{HEADER_H//2}" r="6" fill="#ff5f57"/>
+  <circle cx="34" cy="{HEADER_H//2}" r="6" fill="#ffbd2e"/>
+  <circle cx="54" cy="{HEADER_H//2}" r="6" fill="#28c840"/>
+  <text x="74" y="{HEADER_H//2+5}" fill="#c9d1d9" font-size="13" font-family="monospace">{_html.escape(header_label)}</text>
+  <line x1="0" y1="{HEADER_H}" x2="{width}" y2="{HEADER_H}" stroke="#30363d" stroke-width="1"/>
+  {''.join(lines_svg)}
+</svg>'''
+
+    svg_b64 = base64.b64encode(svg.encode('utf-8')).decode('utf-8')
+    return f'data:image/svg+xml;base64,{svg_b64}'
 
 
 # ─── SSE Event Queue Management ─────────────────────────────────────────────
@@ -510,6 +582,7 @@ def instrument_agent(agent: Manus, task_id: str):
         try:
             screenshot_b64: Optional[str] = None
             import logging as _logging
+            print(f'[SCREENSHOT] tool={name} starting screenshot capture', flush=True)
             _logging.getLogger('nexus.screenshot').info(f'[SCREENSHOT] tool={name} starting screenshot capture')
 
             if name == "browser_use":
@@ -646,6 +719,7 @@ def instrument_agent(agent: Manus, task_id: str):
                     screenshot_b64 = render_tool_screenshot(display_content, name)
 
             if screenshot_b64:
+                print(f'[SCREENSHOT] tool={name} PUSHING screenshot ({len(screenshot_b64)} bytes)', flush=True)
                 _logging.getLogger('nexus.screenshot').info(f'[SCREENSHOT] tool={name} PUSHING screenshot ({len(screenshot_b64)} bytes)')
                 push_event(task_id, {
                     "type": "screenshot",
@@ -654,9 +728,13 @@ def instrument_agent(agent: Manus, task_id: str):
                     "image": screenshot_b64,
                 })
             else:
+                print(f'[SCREENSHOT] tool={name} NO screenshot generated', flush=True)
                 _logging.getLogger('nexus.screenshot').warning(f'[SCREENSHOT] tool={name} NO screenshot generated')
         except Exception as _ss_err:
             import logging as _logging2
+            print(f'[SCREENSHOT] tool={name} EXCEPTION: {_ss_err}', flush=True)
+            import traceback as _tb2
+            _tb2.print_exc()
             _logging2.getLogger('nexus.screenshot').error(f'[SCREENSHOT] tool={name} EXCEPTION: {_ss_err}')
             pass  # Screenshot is optional, never block execution
 
@@ -812,6 +890,46 @@ async def run_agent_and_stream(task_id: str, prompt: str) -> AsyncGenerator[str,
 @app.get("/health")
 async def health():
     return {"status": "ok", "service": "nexus-api", "version": "2.0.0"}
+
+@app.get("/debug/screenshot")
+async def debug_screenshot():
+    """Test endpoint: generate a sample screenshot and return it as base64."""
+    test_content = """# Debug Screenshot Test
+print('Hello, Nexus!')
+
+# Tool execution result:
+Observed output of cmd `bash` executed:
+Hello, Nexus!
+Process completed successfully.
+
+# 中文测试: 工具执行完成
+成功生成截图"""
+    b64 = render_tool_screenshot(test_content, 'bash', max_lines=20)
+    if b64:
+        return {
+            "ok": True,
+            "length": len(b64),
+            "prefix": b64[:50],
+            "image": b64,
+        }
+    else:
+        return {"ok": False, "error": "render_tool_screenshot returned empty string"}
+
+@app.get("/debug/config")
+async def debug_config():
+    """Debug endpoint: show current sandbox config."""
+    sandbox_info = {}
+    if app_config.sandbox:
+        sandbox_info = {
+            "use_sandbox": app_config.sandbox.use_sandbox,
+            "image": app_config.sandbox.image,
+            "work_dir": app_config.sandbox.work_dir,
+        }
+    return {
+        "sandbox_config": sandbox_info,
+        "sandbox_client_has_sandbox": SANDBOX_CLIENT.sandbox is not None,
+        "event_queues_count": len(event_queues),
+    }
 
 @app.get("/api/tasks")
 async def list_tasks():
